@@ -38,3 +38,203 @@
 [2026-10-18T02:21:24.711637+00:00] [INFO] Initiating rolling-batch training for 500 symbols in 10 batches (Batch Size: 50, Storage Cap: 18.0 GB)
 [2026-10-18T02:21:24.729209+00:00] [INFO] Loaded existing model booster with 72 iterations.
 [2026-10-18T02:21:24.729427+00:00] [INFO] Processing Batch 1/10 (50 symbols)...
+[2026-10-18T02:47:07.076827+00:00] [INFO] Initiating rolling-batch training for 500 symbols in 10 batches (Batch Size: 50, Storage Cap: 18.0 GB)
+[2026-10-18T02:47:07.091784+00:00] [INFO] Loaded existing model booster with 72 iterations.
+[2026-10-18T02:47:07.092109+00:00] [INFO] Processing Batch 1/10 (50 symbols)...
+[2026-10-18T03:12:46.644281+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T03:12:46.649329+00:00] [INFO] Loaded existing model booster with 12 iterations.
+[2026-10-18T03:12:46.652824+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T03:12:47.223388+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.6s | Features extracted: 1,000 rows est | Model trees updated: 51 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 56%
+[2026-10-18T03:12:47.223590+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T03:12:47.223660+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T03:12:47.476932+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 66 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 42%
+[2026-10-18T03:12:47.477057+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T03:12:47.477212+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 22.
+{"timestamp": "2026-10-18T03:12:47.481225+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T03:12:53.076194+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T03:12:53Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.7378, "entry_price": 81901.4, "stop_loss": 81975.9476, "take_profit": 81677.7571, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+[2026-10-18T03:13:28.905824+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T03:13:28.911619+00:00] [INFO] Loaded existing model booster with 40 iterations.
+[2026-10-18T03:13:28.913992+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T03:13:29.432042+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.5s | Features extracted: 1,000 rows est | Model trees updated: 135 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 56%
+[2026-10-18T03:13:29.432186+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T03:13:29.432246+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T03:13:29.758463+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 150 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 57%
+[2026-10-18T03:13:29.758601+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T03:13:29.758761+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 50.
+{"timestamp": "2026-10-18T03:13:29.771033+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T03:13:37.618453+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T03:13:37Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.7378, "entry_price": 81880.8, "stop_loss": 81955.3476, "take_profit": 81657.1571, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+[2026-10-18T03:13:51.299009+00:00] [INFO] Initiating accelerated rolling-batch training for 4 symbols in 2 batches (Batch Size: 2, Storage Cap: 18.0 GB)
+[2026-10-18T03:13:51.317016+00:00] [INFO] Loaded existing model booster with 72 iterations.
+[2026-10-18T03:13:51.320568+00:00] [INFO] Processing Batch 1/2 (2 symbols)...
+[2026-10-18T03:13:51.945893+00:00] [INFO] [Batch 1/2] Processed 2 symbols in 0.6s | Features extracted: 2,000 rows est | Model trees updated: 246 total trees | Current Disk Usage: 0.2 GB / 18.0 GB | CPU Load: 41%
+[2026-10-18T03:13:51.946025+00:00] [INFO] Purged 8 raw files for batch 1. Disk usage: 0.161 GB
+[2026-10-18T03:13:51.946097+00:00] [INFO] Processing Batch 2/2 (2 symbols)...
+[2026-10-18T03:13:52.513605+00:00] [INFO] [Batch 2/2] Processed 2 symbols in 0.6s | Features extracted: 2,000 rows est | Model trees updated: 276 total trees | Current Disk Usage: 0.2 GB / 18.0 GB | CPU Load: 62%
+[2026-10-18T03:13:52.513733+00:00] [INFO] Purged 8 raw files for batch 2. Disk usage: 0.155 GB
+[2026-10-18T03:13:52.513890+00:00] [INFO] Rolling-batch training completed successfully for all 4 symbols. Final model iterations: 92.
+[2026-10-18T03:17:17.432935+00:00] [INFO] Initiating accelerated rolling-batch training for 500 symbols in 10 batches (Batch Size: 50, Storage Cap: 18.0 GB)
+[2026-10-18T03:17:17.464200+00:00] [INFO] Loaded existing model booster with 92 iterations.
+[2026-10-18T03:17:17.469998+00:00] [INFO] Processing Batch 1/10 (50 symbols)...
+[2026-10-18T03:25:35.519102+00:00] [INFO] [Batch 1/10] Processed 50 symbols in 497.7s | Features extracted: 50,000 rows est | Model trees updated: 396 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 6%
+[2026-10-18T03:25:35.519301+00:00] [INFO] Purged 182 raw files for batch 1. Disk usage: 0.031 GB
+[2026-10-18T03:25:35.519359+00:00] [INFO] Processing Batch 2/10 (50 symbols)...
+[2026-10-18T03:32:52.219107+00:00] [INFO] [Batch 2/10] Processed 50 symbols in 436.3s | Features extracted: 50,000 rows est | Model trees updated: 516 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 9%
+[2026-10-18T03:32:52.220786+00:00] [INFO] Purged 159 raw files for batch 2. Disk usage: 0.037 GB
+[2026-10-18T03:32:52.220877+00:00] [INFO] Processing Batch 3/10 (50 symbols)...
+[2026-10-18T03:42:05.638362+00:00] [INFO] [Batch 3/10] Processed 50 symbols in 553.0s | Features extracted: 50,000 rows est | Model trees updated: 636 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 5%
+[2026-10-18T03:42:05.639590+00:00] [INFO] Purged 171 raw files for batch 3. Disk usage: 0.029 GB
+[2026-10-18T03:42:05.639649+00:00] [INFO] Processing Batch 4/10 (50 symbols)...
+[2026-10-18T03:47:16.058735+00:00] [INFO] [Batch 4/10] Processed 50 symbols in 310.2s | Features extracted: 50,000 rows est | Model trees updated: 756 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 3%
+[2026-10-18T03:47:16.059048+00:00] [INFO] Purged 57 raw files for batch 4. Disk usage: 0.027 GB
+[2026-10-18T03:47:16.059194+00:00] [INFO] Processing Batch 5/10 (50 symbols)...
+[2026-10-18T03:56:37.589158+00:00] [INFO] [Batch 5/10] Processed 50 symbols in 561.2s | Features extracted: 50,000 rows est | Model trees updated: 876 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 5%
+[2026-10-18T03:56:37.591229+00:00] [INFO] Purged 165 raw files for batch 5. Disk usage: 0.027 GB
+[2026-10-18T03:56:37.591682+00:00] [INFO] Processing Batch 6/10 (50 symbols)...
+[2026-10-18T04:05:11.136544+00:00] [INFO] [Batch 6/10] Processed 50 symbols in 513.1s | Features extracted: 50,000 rows est | Model trees updated: 996 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 7%
+[2026-10-18T04:05:11.138188+00:00] [INFO] Purged 196 raw files for batch 6. Disk usage: 0.031 GB
+[2026-10-18T04:05:11.138247+00:00] [INFO] Processing Batch 7/10 (50 symbols)...
+[2026-10-18T04:12:55.484344+00:00] [INFO] [Batch 7/10] Processed 50 symbols in 464.3s | Features extracted: 50,000 rows est | Model trees updated: 1116 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 7%
+[2026-10-18T04:12:55.484488+00:00] [INFO] Purged 200 raw files for batch 7. Disk usage: 0.030 GB
+[2026-10-18T04:12:55.484542+00:00] [INFO] Processing Batch 8/10 (50 symbols)...
+[2026-10-18T04:20:09.556315+00:00] [INFO] [Batch 8/10] Processed 50 symbols in 434.1s | Features extracted: 50,000 rows est | Model trees updated: 1236 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 3%
+[2026-10-18T04:20:09.556445+00:00] [INFO] Purged 70 raw files for batch 8. Disk usage: 0.027 GB
+[2026-10-18T04:20:09.556495+00:00] [INFO] Processing Batch 9/10 (50 symbols)...
+[2026-10-18T04:32:13.223965+00:00] [INFO] [Batch 9/10] Processed 50 symbols in 723.3s | Features extracted: 50,000 rows est | Model trees updated: 1356 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 5%
+[2026-10-18T04:32:13.224095+00:00] [INFO] Purged 184 raw files for batch 9. Disk usage: 0.031 GB
+[2026-10-18T04:32:13.224147+00:00] [INFO] Processing Batch 10/10 (50 symbols)...
+[2026-10-18T04:40:44.656302+00:00] [INFO] [Batch 10/10] Processed 50 symbols in 511.4s | Features extracted: 50,000 rows est | Model trees updated: 1476 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 6%
+[2026-10-18T04:40:44.656427+00:00] [INFO] Purged 187 raw files for batch 10. Disk usage: 0.027 GB
+[2026-10-18T04:40:44.656705+00:00] [INFO] Rolling-batch training completed successfully for all 500 symbols. Final model iterations: 492.
+{"timestamp": "2026-10-18T05:09:09.605775+00:00", "event_type": "DAEMON_STARTED", "message": "Live signal daemon started (Interval: 15s)", "data": {}}
+{"timestamp": "2026-10-18T05:09:13.318836+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on BTC/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:09:28.549248+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on BTC/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:09:43.782464+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on BTC/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:09:58.961104+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on BTC/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:10:14.115623+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on BTC/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:10:29.270340+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on BTC/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:10:31.343353+00:00", "event_type": "DAEMON_STOPPED", "message": "Live signal daemon stopped by user.", "data": {}}
+{"timestamp": "2026-10-18T05:11:10.909415+00:00", "event_type": "DAEMON_STARTED", "message": "Live signal daemon started (Interval: 15s)", "data": {}}
+{"timestamp": "2026-10-18T05:11:15.700994+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 500 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:12:15.478586+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for ICNT/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:12:15Z", "symbol": "ICNT/USDT:USDT", "direction": "SHORT", "confidence": 0.8648, "entry_price": 0.1912, "stop_loss": 0.1957, "take_profit": 0.1778, "risk_pct": 3.0, "suggested_position_size": 673.6099, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:12:30.626095+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:12:45.799487+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:13:00.931471+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:13:16.082972+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:13:31.246580+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:13:46.495389+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:14:01.650271+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:14:16.650672+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 500 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:15:14.723602+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for ICNT/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:15:14Z", "symbol": "ICNT/USDT:USDT", "direction": "SHORT", "confidence": 0.873, "entry_price": 0.1918, "stop_loss": 0.1964, "take_profit": 0.178, "risk_pct": 3.0, "suggested_position_size": 651.6616, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:15:29.921597+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:15:45.075540+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:16:00.231086+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:16:15.385940+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:16:30.543673+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:16:45.698409+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:17:00.852825+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:17:16.007816+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:17:31.164610+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:17:46.319494+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:18:01.577373+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:18:16.732330+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:18:32.004491+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:18:47.250454+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:19:02.406162+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:19:17.560820+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:19:32.714332+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:19:47.871109+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:20:03.025543+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:20:18.183270+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:20:33.382962+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:20:48.521873+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:21:03.658710+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:21:18.907018+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:21:34.061109+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:21:49.216973+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:22:04.372442+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:22:19.608840+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:22:34.785938+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:22:49.939421+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:23:05.094847+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:23:20.250731+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:23:35.402656+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:23:50.561503+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:24:05.717462+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:24:20.873504+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:24:36.028938+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:24:51.173904+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:25:06.339896+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:25:21.493280+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:25:36.753779+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:25:51.908566+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:26:07.064855+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:26:22.219176+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:26:37.373454+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:26:52.517711+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:27:07.645528+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:27:22.841367+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:27:37.988408+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:27:53.151388+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:28:08.305649+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:28:23.464202+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:28:38.617673+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:28:53.774967+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:29:08.926486+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:29:24.083841+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:29:39.239480+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:29:54.393076+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:30:09.550106+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:30:24.705129+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on ICNT/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:30:43.988664+00:00", "event_type": "TRADE_CLOSED", "message": "Position closed on ICNT/USDT:USDT (SHORT): STOP_LOSS", "data": {"symbol": "ICNT/USDT:USDT", "direction": "SHORT", "exit_reason": "STOP_LOSS", "exit_price": 0.1964, "exit_time": "2026-10-18T05:30:00+00:00", "realized_pnl": -3.0, "new_equity": 97.0}}
+{"timestamp": "2026-10-18T05:30:43.989295+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 500 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:31:40.331440+00:00", "event_type": "SYMBOL_ERROR", "message": "Error evaluating IO/USDT:USDT: \"['htf_15m_rsi_14', 'htf_15m_macd', 'htf_15m_macd_signal', 'htf_15m_macd_hist', 'htf_15m_roc_5', 'htf_15m_roc_10', 'htf_15m_roc_20', 'htf_15m_return_1', 'htf_15m_return_3', 'htf_15m_return_5', 'htf_15m_return_10', 'htf_15m_return_20', 'htf_15m_vroc_5', 'htf_15m_vroc_14', 'htf_15m_vol_ratio_20', 'htf_15m_dist_vwap', 'htf_15m_atr_14', 'htf_15m_natr_14', 'htf_15m_bb_width', 'htf_15m_bb_pct_b', 'htf_15m_ema_20_50_diff', 'htf_15m_ema_50_200_diff', 'htf_15m_trend_bullish'] not in index\"", "data": {}}
+{"timestamp": "2026-10-18T05:31:46.035083+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for AVA/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:31:46Z", "symbol": "AVA/USDT:USDT", "direction": "SHORT", "confidence": 0.8394, "entry_price": 0.3968, "stop_loss": 0.4052, "take_profit": 0.3715, "risk_pct": 3.0, "suggested_position_size": 345.2122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:32:01.268283+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:32:16.425830+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:32:31.682570+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:32:46.838623+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:33:01.992680+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:33:17.147570+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:33:32.303406+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:33:47.458230+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:34:02.614508+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:34:17.770938+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:34:32.925144+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:34:48.085413+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:35:03.235727+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:35:18.368413+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:35:33.548191+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:35:48.701891+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:36:03.959288+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:36:19.118920+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:36:34.270151+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+[2026-10-18T05:36:45.147340+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T05:36:45.152327+00:00] [INFO] Loaded existing model booster with 6 iterations.
+[2026-10-18T05:36:45.152919+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T05:36:45.479286+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 33 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 41%
+[2026-10-18T05:36:45.479404+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T05:36:45.479454+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T05:36:45.821964+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 48 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 56%
+[2026-10-18T05:36:45.822080+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T05:36:45.822229+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 16.
+{"timestamp": "2026-10-18T05:36:45.834003+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:36:49.270704+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 500 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:36:53.797231+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:36:53Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.6718, "entry_price": 81681.9, "stop_loss": 81728.068, "take_profit": 81543.396, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:36:53.825056+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:36:56.535626+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:37:52.113059+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for 1000FLOKI/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:37:52Z", "symbol": "1000FLOKI/USDT:USDT", "direction": "SHORT", "confidence": 0.8277, "entry_price": 0.0234, "stop_loss": 0.0234, "take_profit": 0.0232, "risk_pct": 3.0, "suggested_position_size": 41489.4596, "status": "SIGNAL_GENERATED"}}
+[2026-10-18T05:38:03.061648+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T05:38:03.067333+00:00] [INFO] Loaded existing model booster with 8 iterations.
+[2026-10-18T05:38:03.068807+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T05:38:03.404952+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 39 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 42%
+[2026-10-18T05:38:03.405095+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T05:38:03.405161+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T05:38:03.710964+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 54 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 55%
+[2026-10-18T05:38:03.711079+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T05:38:03.711236+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 18.
+{"timestamp": "2026-10-18T05:38:03.723434+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:38:07.135358+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 500 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:38:07.431005+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:38:07Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.6757, "entry_price": 81668.4, "stop_loss": 81715.5394, "take_profit": 81526.9817, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:38:07.471894+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:38:09.716177+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:38:15.213448+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}

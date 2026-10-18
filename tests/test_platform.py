@@ -33,6 +33,7 @@ from backtester import BacktestEngine, compare_risk_profiles
 from rolling_train_pipeline import RollingBatchPipeline
 from scanner import GlobalUniverseScanner
 from live_signals import LiveSignalGenerator, LATEST_SIGNAL_PATH, ACTIVE_TRADE_PATH, AUDIT_LOG_PATH
+from execution import DualModeExecutionEngine, PaperWallet, PAPER_WALLET_PATH
 from cli import app
 
 
@@ -254,6 +255,87 @@ class TestCryptoMLPlatform(unittest.TestCase):
         result = runner.invoke(app, ["status"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Crypto ML Platform Status", result.stdout)
+
+        # Test execute command in paper mode
+        res_exec = runner.invoke(app, ["execute", "--mode", "paper", "--threshold", "0.99"])
+        self.assertEqual(res_exec.exit_code, 0)
+
+    def test_11_execution_engine_paper_mode_and_orphan_cleanup(self):
+        """Verify PaperWallet lifecycle, bracket order placement, and orphan cleanup sweep."""
+        test_wallet_path = Path("test_paper_wallet.json")
+        wallet = PaperWallet(initial_equity=100.0, wallet_path=test_wallet_path)
+        
+        # Open position
+        pos = wallet.open_position(
+            symbol="BTC/USDT:USDT",
+            direction="LONG",
+            entry_price=50000.0,
+            size=0.01,
+            sl_price=49000.0,
+            tp_price=53000.0,
+            leverage=50.0
+        )
+        self.assertIsNotNone(wallet.active_position)
+        self.assertEqual(len(wallet.pending_orders), 2, "Must create 2 bracket orders (SL + TP)")
+        self.assertLess(wallet.available_balance, 100.0)
+
+        # Update unrealized PnL
+        wallet.update_unrealized_pnl(51000.0)
+        self.assertGreater(wallet.unrealized_pnl, 0.0)
+
+        # Close position and verify orphan cleanup sweep
+        trade = wallet.close_position(exit_price=53000.0, exit_reason="TAKE_PROFIT")
+        self.assertIsNone(wallet.active_position)
+        self.assertEqual(len(wallet.pending_orders), 0, "Closure sweep must purge all pending bracket orders!")
+        self.assertGreater(wallet.equity, 100.0)
+        self.assertEqual(len(wallet.trade_history), 1)
+
+        if test_wallet_path.exists():
+            test_wallet_path.unlink()
+
+    def test_12_precise_5pct_risk_sizing_and_leverage(self):
+        """Verify exact 5% risk calculation strictly against Account Equity."""
+        engine = DualModeExecutionEngine(
+            mode="PAPER",
+            risk_pct=0.05,
+            confidence_threshold=0.35,
+            initial_paper_equity=2.0  # $2 test balance from prompt example
+        )
+        
+        # Sizing formula: $2 balance, 5% risk = $0.10 dollar risk.
+        # ATR = $2.0, entry = $100, max leverage = 50x
+        # SL dist = 1.0 * ATR = $2.0. Target size = $0.10 / $2.0 = 0.05 coins.
+        # Notional = 0.05 * 100 = $5.0. Required margin = 5.0 / 50 = $0.10.
+        # If SL is hit (price moves $2 against position): loss = 0.05 * 2 = $0.10 = 5% of $2.
+        size, sl, tp, dollar_risk = engine.calculate_5pct_risk_position(
+            symbol="TEST/USDT:USDT",
+            entry_price=100.0,
+            atr_val=2.0,
+            direction="LONG",
+            max_leverage=50,
+            account_equity=2.0
+        )
+        self.assertAlmostEqual(dollar_risk, 0.10, places=2)
+        self.assertAlmostEqual(size, 0.05, places=2)
+        self.assertEqual(sl, 98.0)
+        self.assertEqual(tp, 106.0)
+
+        # Loss verification at SL
+        simulated_loss = size * (100.0 - sl)
+        self.assertAlmostEqual(simulated_loss, dollar_risk, places=2)
+
+    def test_13_feature_importance_booster_interface(self):
+        """Verify ModelTrainer.get_feature_importance() works cleanly without NotFittedError."""
+        trainer = ModelTrainer(pipeline=self.pipeline)
+        # Verify model loading
+        loaded = trainer.load_model()
+        if loaded:
+            fi = trainer.get_feature_importance()
+            self.assertIsInstance(fi, dict)
+            self.assertGreater(len(fi), 0)
+            # Verify sorted descending
+            vals = list(fi.values())
+            self.assertEqual(vals, sorted(vals, reverse=True))
 
 
 if __name__ == "__main__":

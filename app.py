@@ -2,6 +2,10 @@
 Streamlit Web Dashboard for Binance Futures ML Crypto Research Platform.
 
 Features:
+- Dual-Mode Live Execution & Portfolio Management (PAPER vs LIVE modes).
+- Isolated margin mode with exchange maximum leverage inspection.
+- Precise 5% account equity risk calculation and 1:3 RR bracket orders.
+- Strict global 1-trade rule and automated orphan order cleanup.
 - Real-time disk storage meter and system health guardrails (< 20GB limit).
 - Risk Sizing Optimizer: Side-by-side comparison of 2%, 3%, and 5% account risk compounding from $100.
 - Global Multi-Symbol Universe Scanner: Simultaneous 500+ symbol scan with strict global 1-trade-at-a-time execution.
@@ -26,10 +30,11 @@ from model import ModelTrainer
 from backtester import BacktestEngine, compare_risk_profiles
 from scanner import GlobalUniverseScanner
 from live_signals import LiveSignalGenerator, LATEST_SIGNAL_PATH, ACTIVE_TRADE_PATH, AUDIT_LOG_PATH
+from execution import DualModeExecutionEngine, PaperWallet, PAPER_WALLET_PATH
 
 # Page configuration
 st.set_page_config(
-    page_title="Binance Futures ML Research Platform",
+    page_title="Binance Futures ML Research & Execution Platform",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -62,6 +67,13 @@ st.markdown("""
         max-height: 400px;
         overflow-y: scroll;
     }
+    .metric-card {
+        background-color: #1a1e29;
+        border-radius: 8px;
+        padding: 14px;
+        border-left: 4px solid #00c087;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -83,6 +95,22 @@ pipeline, fe, trainer, scanner = get_platform_components()
 st.sidebar.title("⚡ Control Panel")
 st.sidebar.markdown("---")
 
+# Execution Engine Mode
+st.sidebar.subheader("🕹️ Execution Mode")
+exec_mode = st.sidebar.radio(
+    "Trading Environment",
+    ["PAPER", "LIVE"],
+    index=0,
+    help="PAPER uses local simulation tracking live Binance ticker prices. LIVE submits real orders to Binance Futures via CCXT."
+)
+
+api_key = ""
+api_secret = ""
+if exec_mode == "LIVE":
+    st.sidebar.warning("⚠️ LIVE MODE ACTIVE: Real orders will be submitted to Binance Futures.")
+    api_key = st.sidebar.text_input("Binance API Key", value=os.getenv("BINANCE_API_KEY", ""), type="password")
+    api_secret = st.sidebar.text_input("Binance API Secret", value=os.getenv("BINANCE_API_SECRET", ""), type="password")
+
 # Storage & System Guardrail Meter
 storage_gb = pipeline.get_storage_usage_gb()
 free_gb = pipeline.get_system_free_disk_gb()
@@ -100,6 +128,7 @@ st.sidebar.subheader("💰 Capital & Compounding")
 initial_capital = st.sidebar.number_input("Starting Capital ($)", value=100.0, step=25.0)
 
 st.sidebar.subheader("🎯 Risk & Strategy Parameters")
+risk_pct_val = st.sidebar.selectbox("Risk per Trade (Strict Equity %)", [0.05, 0.03, 0.02], index=0, format_func=lambda x: f"{int(x*100)}% Account Risk")
 sl_atr_mult = st.sidebar.slider("Stop-Loss (x ATR)", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
 tp_atr_mult = st.sidebar.slider("Take-Profit (x ATR)", min_value=1.0, max_value=6.0, value=3.0, step=0.1)
 rr_ratio = tp_atr_mult / sl_atr_mult
@@ -109,7 +138,7 @@ confidence_threshold = st.sidebar.slider(
     "ML Probability Threshold",
     min_value=0.20,
     max_value=0.70,
-    value=0.30,
+    value=0.35,
     step=0.01
 )
 
@@ -133,25 +162,172 @@ maker_fee_pct = st.sidebar.number_input("Maker Fee %", value=0.02, step=0.01) / 
 funding_rate_8h_pct = st.sidebar.number_input("8h Funding Rate %", value=0.01, step=0.005) / 100.0
 
 # --- MAIN CONTENT AREA ---
-st.title("⚡ Binance Futures ML Crypto Research Platform")
-st.markdown("Multi-Symbol Rolling-Batch Trained Quantitative Platform with 1:3 RR and Compounding Risk Sizing.")
+st.title("⚡ Binance Futures ML Crypto Research & Execution Platform")
+st.markdown("Dual-Mode Production System with Isolated Margin, Dynamic Max Leverage, 5% Risk Sizing, and Automated Orphan Cleanup.")
 
 # Quick Status Bar
-top_cols = st.columns(4)
-top_cols[0].metric("Focal Asset", selected_symbol)
-top_cols[1].metric("Starting Balance", f"${initial_capital:.2f}")
-top_cols[2].metric("Risk-Reward Setup", f"1 : {rr_ratio:.1f}")
-top_cols[3].metric("Model State", "Active & Loaded" if trainer.model else "Unloaded")
+top_cols = st.columns(5)
+top_cols[0].metric("Mode", exec_mode)
+top_cols[1].metric("Focal Asset", selected_symbol)
+top_cols[2].metric("Starting Capital", f"${initial_capital:.2f}")
+top_cols[3].metric("Risk Setup", f"{int(risk_pct_val*100)}% Risk | 1:{rr_ratio:.1f} RR")
+top_cols[4].metric("Model State", "Active & Loaded" if trainer.model or trainer.booster else "Unloaded")
 
 st.markdown("---")
 
 # Main Navigation Tabs
-tab_optimizer, tab_global, tab_live, tab_single = st.tabs([
+tab_execution, tab_optimizer, tab_global, tab_live, tab_single = st.tabs([
+    "⚡ Dual-Mode Execution & Portfolio",
     "🎯 Risk Sizing Optimizer (2% vs 3% vs 5%)",
     "🌐 Global Universe Scanner",
     "📡 Decoupled Live Signals & Audit",
     "📊 Single Symbol Drilldown"
 ])
+
+# -------------------------------------------------------------
+# TAB 0: DUAL-MODE EXECUTION & PORTFOLIO
+# -------------------------------------------------------------
+with tab_execution:
+    st.subheader(f"Dual-Mode Trading Engine: {exec_mode} Environment")
+    st.markdown(
+        "Executes high-conviction trades with **Strict Global 1-Trade Rule**, **Isolated Margin**, "
+        "**Exchange Max Leverage**, and **Automated Startup & Closure Orphan Cleanup**."
+    )
+
+    # Initialize Paper Wallet or Read State
+    paper_wallet = PaperWallet()
+    curr_equity = paper_wallet.equity if exec_mode == "PAPER" else 100.0
+    active_pos = paper_wallet.active_position if exec_mode == "PAPER" else None
+
+    # Top KPI Metrics Row
+    kpi_cols = st.columns(5)
+    kpi_cols[0].metric("Account Equity", f"${curr_equity:.2f}")
+    kpi_cols[1].metric("Available Margin", f"${paper_wallet.available_balance:.2f}" if exec_mode == "PAPER" else "Live")
+    kpi_cols[2].metric("Margin Used", f"${paper_wallet.margin_used:.2f}" if exec_mode == "PAPER" else "Live")
+    kpi_cols[3].metric("Realized PnL", f"${paper_wallet.realized_pnl:.2f}", delta=f"{paper_wallet.realized_pnl:.2f}")
+    kpi_cols[4].metric("Total Fees Paid", f"${paper_wallet.total_fees_paid:.2f}")
+
+    # Interactive Action Controls
+    st.markdown("---")
+    act_col1, act_col2, act_col3 = st.columns([2, 1, 1])
+
+    with act_col1:
+        if st.button("🚀 Run Execution Cycle (Scan & Enter High-Conviction Setup)", type="primary", width="stretch"):
+            with st.spinner(f"Running execution cycle in {exec_mode} mode..."):
+                try:
+                    engine = DualModeExecutionEngine(
+                        mode=exec_mode,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        risk_pct=risk_pct_val,
+                        confidence_threshold=confidence_threshold,
+                        base_timeframe=timeframe,
+                        symbols=symbol_choices
+                    )
+                    trade_res = engine.step()
+                    if trade_res:
+                        st.success(f"Executed trade on {trade_res['symbol']} ({trade_res['direction']}) with {trade_res.get('leverage')}x Leverage!")
+                    else:
+                        active = engine.get_active_trade()
+                        if active and active.get("status") == "OPEN":
+                            st.info(f"Active trade already open on {active.get('symbol')}. Global 1-trade rule enforced.")
+                        else:
+                            st.info("Scan completed. No setup exceeded the confidence threshold.")
+                except Exception as e:
+                    st.error(f"Execution Error: {e}")
+
+    with act_col2:
+        if st.button("🧹 Sweep Orphan Orders", width="stretch"):
+            with st.spinner("Sweeping dangling or orphan orders..."):
+                try:
+                    engine = DualModeExecutionEngine(
+                        mode=exec_mode,
+                        api_key=api_key,
+                        api_secret=api_secret,
+                        symbols=symbol_choices
+                    )
+                    engine.startup_sweep()
+                    st.success("Orphan cleanup sweep complete! Zero dangling orders remain.")
+                except Exception as e:
+                    st.error(f"Sweep Error: {e}")
+
+    with act_col3:
+        if exec_mode == "PAPER":
+            if st.button("🔄 Reset Paper Wallet ($100)", width="stretch"):
+                pw = PaperWallet(initial_equity=100.0)
+                pw.equity = 100.0
+                pw.available_balance = 100.0
+                pw.margin_used = 0.0
+                pw.realized_pnl = 0.0
+                pw.unrealized_pnl = 0.0
+                pw.total_fees_paid = 0.0
+                pw.active_position = None
+                pw.pending_orders = []
+                pw.trade_history = []
+                pw.save()
+                st.success("Paper wallet reset to $100.00!")
+
+    # Active Position & Bracket Orders Display
+    col_pos, col_brackets = st.columns(2)
+
+    with col_pos:
+        st.markdown("#### 📍 Active Global Position (Strict 1 Globally)")
+        if ACTIVE_TRADE_PATH.exists():
+            try:
+                active_data = json.loads(ACTIVE_TRADE_PATH.read_text())
+                if active_data.get("status") == "OPEN":
+                    p_sym = active_data.get("symbol", "N/A")
+                    p_dir = active_data.get("direction", "LONG")
+                    p_entry = active_data.get("entry_price", 0.0)
+                    p_size = active_data.get("suggested_position_size", 0.0)
+                    p_sl = active_data.get("stop_loss", 0.0)
+                    p_tp = active_data.get("take_profit", 0.0)
+                    p_lev = active_data.get("leverage", "N/A")
+                    p_risk = active_data.get("dollar_risk", active_data.get("risk_pct", 5.0))
+
+                    badge_color = "#00c087" if p_dir == "LONG" else "#ff4d4f"
+                    st.markdown(
+                        f"<div class='metric-card' style='border-left-color:{badge_color};'>"
+                        f"<h3>{p_dir} {p_sym} ({p_lev}x Isolated)</h3>"
+                        f"Entry Price: <b>${p_entry:.4f}</b><br>"
+                        f"Position Size: <b>{p_size} contracts</b><br>"
+                        f"Capital Risk: <b style='color:#ffc107;'>${p_risk} (5% Account Risk)</b><br>"
+                        f"Stop-Loss (1x ATR): <b style='color:#ff4d4f;'>${p_sl:.4f}</b><br>"
+                        f"Take-Profit (3x ATR): <b style='color:#00c087;'>${p_tp:.4f}</b><br>"
+                        f"Timestamp: <b>{active_data.get('timestamp')}</b>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
+                else:
+                    st.info("No active position open. Platform is monitoring for high-conviction entries.")
+            except Exception as e:
+                st.error(f"Error loading active position: {e}")
+        else:
+            st.info("No active position recorded.")
+
+    with col_brackets:
+        st.markdown("#### 🛡️ Active Bracket Orders (1:3 RR)")
+        if exec_mode == "PAPER" and paper_wallet.pending_orders:
+            for o in paper_wallet.pending_orders:
+                st.markdown(
+                    f"<div style='background-color:#121620; padding:10px; border-radius:6px; margin-bottom:8px; border:1px solid #2e3346;'>"
+                    f"<b>{o['type']} {o['side']}</b> | Stop Price: <b>${o['stop_price']:.4f}</b> | "
+                    f"Amount: <b>{o['amount']}</b> | Reduce-Only: <b>{o.get('reduce_only', True)}</b>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        elif exec_mode == "LIVE":
+            st.info("Live bracket orders are placed directly on Binance Futures with `reduceOnly=True`.")
+        else:
+            st.info("No active bracket orders.")
+
+    # Trade History Table
+    st.markdown("#### 📜 Recent Trade Execution History")
+    if exec_mode == "PAPER" and paper_wallet.trade_history:
+        th_df = pd.DataFrame(paper_wallet.trade_history[::-1])
+        st.dataframe(th_df, width="stretch")
+    else:
+        st.info("No completed trade history yet.")
 
 # -------------------------------------------------------------
 # TAB 1: RISK SIZING OPTIMIZER (2% vs 3% vs 5% Compounding)
@@ -160,7 +336,7 @@ with tab_optimizer:
     st.subheader(f"Compounding Risk Sizing Comparison: {selected_symbol}")
     st.markdown("Tests and compares **2%, 3%, and 5%** account equity risk per trade starting with **$100** capital.")
 
-    if st.button("🚀 Run Risk Profile Optimization", type="primary"):
+    if st.button("🚀 Run Risk Profile Optimization", type="primary", width="stretch"):
         with st.spinner(f"Simulating compounding equity curves for 2%, 3%, and 5% risk on {selected_symbol}..."):
             df_feat = fe.load_feature_dataset(timeframe, selected_symbol)
             if df_feat.empty:
@@ -191,7 +367,6 @@ with tab_optimizer:
 
         # Side-by-Side KPI Cards
         cols = st.columns(3)
-        risk_labels = ["2% Risk", "3% Risk", "5% Risk"]
         colors = ["#17a2b8", "#28a745", "#ffc107"]
 
         for idx, r_pct in enumerate([0.02, 0.03, 0.05]):
@@ -232,7 +407,7 @@ with tab_optimizer:
             height=480,
             hovermode="x unified"
         )
-        st.plotly_chart(fig_comp, use_container_width=True)
+        st.plotly_chart(fig_comp, width="stretch")
 
         # Drawdown Profiles Comparison
         fig_dd_comp = go.Figure()
@@ -254,7 +429,7 @@ with tab_optimizer:
             template="plotly_dark",
             height=280
         )
-        st.plotly_chart(fig_dd_comp, use_container_width=True)
+        st.plotly_chart(fig_dd_comp, width="stretch")
 
 # -------------------------------------------------------------
 # TAB 2: GLOBAL MULTI-SYMBOL UNIVERSE SCANNER
@@ -270,7 +445,7 @@ with tab_global:
     g_col1, g_col2 = st.columns([1, 3])
     with g_col1:
         global_risk = st.selectbox("Global Risk per Trade", [0.02, 0.03, 0.05], index=1)
-        run_global_btn = st.button("🌐 Execute Universe Scan Backtest", type="primary", use_container_width=True)
+        run_global_btn = st.button("🌐 Execute Universe Scan Backtest", type="primary", width="stretch")
 
     if run_global_btn or "global_backtest_res" not in st.session_state:
         with st.spinner("Executing simultaneous universe scan across all available symbols..."):
@@ -287,7 +462,6 @@ with tab_global:
     g_res = st.session_state.get("global_backtest_res", {})
     if g_res and "metrics" in g_res:
         g_metrics = g_res["metrics"]
-        g_trades = g_res["trades"]
         g_equity = g_res["equity_curve"]
 
         # Global KPIs
@@ -316,7 +490,7 @@ with tab_global:
             template="plotly_dark",
             height=450
         )
-        st.plotly_chart(fig_g, use_container_width=True)
+        st.plotly_chart(fig_g, width="stretch")
 
         # Cross-Symbol Trade Distribution
         dist = g_res.get("symbol_trade_distribution", {})
@@ -332,7 +506,7 @@ with tab_global:
                 color_continuous_scale="Teal"
             )
             fig_dist.update_layout(template="plotly_dark", height=300)
-            st.plotly_chart(fig_dist, use_container_width=True)
+            st.plotly_chart(fig_dist, width="stretch")
 
 # -------------------------------------------------------------
 # TAB 3: DECOUPLED LIVE SIGNALS & AUDIT
@@ -343,7 +517,7 @@ with tab_live:
 
     col_btn1, col_btn2 = st.columns([1, 3])
     with col_btn1:
-        if st.button("📡 Scan Universe Now", type="primary", use_container_width=True):
+        if st.button("📡 Scan Universe Now", type="primary", width="stretch"):
             with st.spinner("Polling live candles and running LightGBM inference..."):
                 gen = LiveSignalGenerator(
                     symbols=symbol_choices,
@@ -395,6 +569,7 @@ with tab_live:
                     f"<div style='background-color:#1a1e29; padding:15px; border-radius:8px; border-left:4px solid {badge_color};'>"
                     f"<h4>Global Trade Status: <span style='color:{badge_color};'>{status}</span></h4>"
                     f"Active Symbol: <b>{state_content.get('symbol', 'None')}</b><br>"
+                    f"Direction: <b>{state_content.get('direction', 'N/A')}</b><br>"
                     f"Entry Price: <b>{state_content.get('entry_price', 'N/A')}</b><br>"
                     f"TP Price: <b>{state_content.get('take_profit', 'N/A')}</b><br>"
                     f"SL Price: <b>{state_content.get('stop_loss', 'N/A')}</b>"
@@ -412,7 +587,7 @@ with tab_live:
     st.markdown("#### Platform Audit Trail (`platform_audit.log`)")
     if AUDIT_LOG_PATH.exists():
         log_lines = AUDIT_LOG_PATH.read_text().strip().split("\n")
-        recent_lines = log_lines[-30:][::-1]  # Most recent first
+        recent_lines = log_lines[-30:][::-1]
         log_text = "\n".join(recent_lines)
         st.markdown(f"<div class='audit-box'><pre>{log_text}</pre></div>", unsafe_allow_html=True)
     else:
@@ -438,6 +613,6 @@ with tab_single:
             color_continuous_scale="Viridis"
         )
         fig_feat.update_layout(template="plotly_dark", height=500)
-        st.plotly_chart(fig_feat, use_container_width=True)
+        st.plotly_chart(fig_feat, width="stretch")
     else:
         st.info("Model not trained yet.")

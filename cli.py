@@ -31,6 +31,7 @@ from backtester import BacktestEngine, compare_risk_profiles
 from scanner import GlobalUniverseScanner
 from rolling_train_pipeline import RollingBatchPipeline
 from live_signals import LiveSignalGenerator, LATEST_SIGNAL_PATH, AUDIT_LOG_PATH
+from execution import DualModeExecutionEngine, PAPER_WALLET_PATH
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("CLI")
@@ -477,6 +478,63 @@ def prune_data(
 
 
 @app.command()
+def execute(
+    mode: str = typer.Option("paper", "--mode", "-m", help="Execution mode: 'paper' or 'live'"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", "-k", help="Binance Futures API Key (or set BINANCE_API_KEY env)"),
+    secret: Optional[str] = typer.Option(None, "--secret", help="Binance Futures API Secret (or set BINANCE_API_SECRET env)"),
+    threshold: float = typer.Option(0.35, "--threshold", help="Model confidence threshold for trade entry"),
+    risk: float = typer.Option(0.05, "--risk", "-r", help="Strict account equity risk fraction per trade (default 5% = 0.05)"),
+    symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols list to evaluate"),
+    timeframe: str = typer.Option("5m", "--timeframe", "-tf", help="Base execution timeframe"),
+    poll_interval: int = typer.Option(10, "--poll-interval", "-i", help="Polling interval in seconds"),
+    daemon: bool = typer.Option(False, "--daemon", "-d", help="Run continuously in background daemon loop"),
+    iterations: Optional[int] = typer.Option(None, "--iterations", help="Maximum iterations to run if in daemon mode")
+):
+    """
+    Executes trades in PAPER or LIVE mode on Binance Futures.
+    Features ISOLATED margin mode, exchange max leverage inspection, 5% risk sizing,
+    1:3 RR bracket orders, strict global 1-trade rule, and automated orphan cleanup.
+    """
+    sym_list = None
+    if symbols:
+        sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
+
+    console.print(f"[bold green]Initializing Dual-Mode Execution Engine ({mode.upper()} MODE)...[/bold green]")
+    try:
+        engine = DualModeExecutionEngine(
+            mode=mode,
+            api_key=api_key,
+            api_secret=secret,
+            risk_pct=risk,
+            confidence_threshold=threshold,
+            base_timeframe=timeframe,
+            symbols=sym_list
+        )
+    except Exception as e:
+        console.print(f"[bold red]Initialization failed: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+    equity = engine.get_current_equity()
+    console.print(f"Current Account Equity: [bold green]${equity:.2f}[/bold green] | Target Risk per Trade: [yellow]{risk*100:.1f}%[/yellow]")
+
+    if daemon:
+        console.print(f"[bold cyan]Starting Continuous Execution Daemon (Interval: {poll_interval}s)...[/bold cyan]")
+        engine.run_loop(poll_interval_sec=poll_interval, max_iterations=iterations)
+    else:
+        console.print("[cyan]Executing single universe scan & execution cycle...[/cyan]")
+        res = engine.step()
+        if res:
+            console.print(f"[bold green]Trade Successfully Executed in {mode.upper()} Mode![/bold green]")
+            console.print(json.dumps(res, indent=2))
+        else:
+            active = engine.get_active_trade()
+            if active and active.get("status") == "OPEN":
+                console.print(f"[yellow]Active trade already in progress on {active.get('symbol')} ({active.get('direction')}). Global 1-trade rule active.[/yellow]")
+            else:
+                console.print("[yellow]Scan cycle finished. No symbol exceeded confidence threshold at this time.[/yellow]")
+
+
+@app.command()
 def status():
     """
     Displays current platform disk usage, downloaded symbols, features, and model status.
@@ -503,6 +561,14 @@ def status():
     table.add_row("LightGBM Model Artifact", "Ready" if model_exists else "Not Trained")
     table.add_row("Latest Signal JSON", "Present" if LATEST_SIGNAL_PATH.exists() else "None")
     table.add_row("Platform Audit Log", "Active" if AUDIT_LOG_PATH.exists() else "None")
+
+    if PAPER_WALLET_PATH.exists():
+        try:
+            with open(PAPER_WALLET_PATH, "r") as f:
+                pw = json.load(f)
+                table.add_row("Paper Wallet Equity", f"${pw.get('equity', 0.0):.2f} (Realized PnL: ${pw.get('realized_pnl', 0.0):.2f})")
+        except Exception:
+            pass
 
     console.print(table)
 

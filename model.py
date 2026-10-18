@@ -127,6 +127,7 @@ class ModelTrainer:
         self.pipeline = pipeline or DataPipeline()
         self.feature_cols: List[str] = []
         self.model: Optional[lgb.LGBMClassifier] = None
+        self.booster: Optional[lgb.Booster] = None
 
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """Identifies pure feature columns, omitting metadata and labels."""
@@ -301,6 +302,8 @@ class ModelTrainer:
             best_model.fit(X, y)
 
         self.model = best_model
+        if hasattr(best_model, "booster_"):
+            self.booster = best_model.booster_
         self.save_model("lightgbm_crypto_model")
 
         summary = {
@@ -314,25 +317,59 @@ class ModelTrainer:
         return summary
 
     def get_feature_importance(self) -> Dict[str, float]:
-        """Returns sorted feature importance dictionary."""
-        if self.model is None or not self.feature_cols:
-            return {}
-        importances = self.model.feature_importances_
-        sorted_idx = np.argsort(importances)[::-1]
-        return {
-            self.feature_cols[i]: float(importances[i])
-            for i in sorted_idx
-        }
+        """Returns sorted feature importance dictionary safely from Booster or Classifier."""
+        # 1. Retrieve booster directly or through model
+        b = self.booster
+        if b is None and self.model is not None:
+            if hasattr(self.model, "booster_") and self.model.booster_ is not None:
+                b = self.model.booster_
+            elif hasattr(self.model, "_Booster") and self.model._Booster is not None:
+                b = self.model._Booster
+
+        # 2. Extract importances
+        if b is not None:
+            try:
+                importances = b.feature_importance(importance_type="split")
+                feature_names = b.feature_name()
+                if not self.feature_cols and feature_names:
+                    self.feature_cols = list(feature_names)
+                cols = self.feature_cols if len(self.feature_cols) == len(importances) else feature_names
+                sorted_idx = np.argsort(importances)[::-1]
+                return {
+                    str(cols[i]): float(importances[i])
+                    for i in sorted_idx
+                }
+            except Exception as e:
+                logger.warning(f"Error extracting feature importance from booster: {e}")
+
+        # 3. Fallback to scikit-learn classifier API
+        if self.model is not None and self.feature_cols:
+            try:
+                importances = getattr(self.model, "feature_importances_", None)
+                if importances is not None and len(importances) == len(self.feature_cols):
+                    sorted_idx = np.argsort(importances)[::-1]
+                    return {
+                        self.feature_cols[i]: float(importances[i])
+                        for i in sorted_idx
+                    }
+            except Exception:
+                pass
+
+        return {}
 
     def save_model(self, model_name: str = "lightgbm_crypto_model") -> None:
         """Saves LightGBM model weights and feature schema."""
-        if self.model is None:
+        b = self.booster
+        if b is None and self.model is not None:
+            b = getattr(self.model, "booster_", None) or getattr(self.model, "_Booster", None)
+        
+        if b is None:
             return
         
         model_path = self.models_dir / f"{model_name}.txt"
         meta_path = self.models_dir / f"{model_name}_metadata.json"
 
-        self.model.booster_.save_model(str(model_path))
+        b.save_model(str(model_path))
         with open(meta_path, "w") as f:
             json.dump({
                 "feature_cols": self.feature_cols,
@@ -354,23 +391,29 @@ class ModelTrainer:
             self.feature_cols = meta.get("feature_cols", [])
 
         booster = lgb.Booster(model_file=str(model_path))
+        self.booster = booster
         self.model = lgb.LGBMClassifier()
         self.model._Booster = booster
+        self.model.fitted_ = True
         self.model._n_classes = 3
+        self.model.n_features_in_ = len(self.feature_cols)
+        self.model._n_features = len(self.feature_cols)
         return True
 
     def predict_probabilities(self, df: pd.DataFrame) -> np.ndarray:
         """
         Generates class probabilities [P(SL), P(TIME), P(TP)] for input DataFrame.
         """
-        if self.model is None:
+        if self.model is None and self.booster is None:
             if not self.load_model():
                 raise RuntimeError("Model is not trained or loaded.")
 
         X = df[self.feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
         
         # Booster raw predict returns probabilities for multiclass
-        if hasattr(self.model, "booster_") and self.model.booster_:
+        if self.booster is not None:
+            return self.booster.predict(X)
+        elif hasattr(self.model, "booster_") and self.model.booster_:
             return self.model.booster_.predict(X)
         elif hasattr(self.model, "_Booster") and self.model._Booster:
             return self.model._Booster.predict(X)
