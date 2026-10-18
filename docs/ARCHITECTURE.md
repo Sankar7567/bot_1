@@ -43,23 +43,25 @@ flowchart TD
         M -->|2%, 3%, 5% Compounding| N[Risk & Friction Optimizer]
     end
 
-    subgraph Live Signal Layer
-        K --> O[Live Signal Generator]
-        A -->|1m Real-Time Poll| O
-        O -->|Atomic Write| P[(signals/latest_signal.json)]
-        O -->|State Persistence| Q[(signals/active_trade_state.json)]
-        O -->|Audit Trail| R[(logs/platform_audit.log)]
+    subgraph Live Execution Layer
+        K --> O[DualModeExecutionEngine]
+        A -->|Real-Time Poll| O
+        O -->|PAPER| P[PaperWallet Simulator]
+        O -->|LIVE| Q[LiveExchangeAdapter / CCXT Binance]
+        O -->|Atomic Write| R[(signals/latest_signal.json)]
+        O -->|State Persistence| S[(signals/active_trade_state.json)]
+        O -->|Audit Trail| T[(logs/platform_audit.log)]
     end
 
     subgraph Presentation Layer
-        S[Typer CLI cli.py]
-        T[Streamlit Dashboard app.py]
+        U[Typer CLI cli.py]
+        V[Streamlit Dashboard app.py]
     end
 
-    M -.-> S
-    M -.-> T
-    P -.-> T
-    R -.-> T
+    M -.-> U
+    M -.-> V
+    R -.-> V
+    T -.-> V
 ```
 
 ---
@@ -74,7 +76,7 @@ To process **500+ cryptocurrency pairs over 1 year of historical data across 4 t
 
 2. **Rolling-Batch Ingestion & Training Pipeline (`rolling_train_pipeline.py`):**
    - The 500+ symbol universe is partitioned into discrete batches (e.g., 50 symbols per batch).
-   - Ingests batch data $\to$ Engineers features $\to$ Applies Triple-Barrier labels $\to$ Trains LightGBM incrementally using `keep_training_booster=True` $\to$ **Immediately purges all raw Parquet files for that batch**.
+   - Ingests batch data → Engineers features → Applies Triple-Barrier labels → Trains LightGBM incrementally using `keep_training_booster=True` → **Immediately purges all raw Parquet files for that batch**.
    - Storage usage is checked after every symbol and batch. If disk usage approaches 18.0 GB, lowest-volume symbols are pruned automatically.
 
 ```mermaid
@@ -112,7 +114,7 @@ sequenceDiagram
   - Exponential Moving Averages (EMA 20, 50, 200) and crossover differentials
 
 ### Zero Look-Ahead Bias Enforcement
-A higher-timeframe bar (e.g., 15m or 1h) spanning $[T_{\text{open}}, T_{\text{close}}]$ is only finalized at $T_{\text{close}} = T_{\text{open}} + \Delta T_{\text{HTF}}$. 
+A higher-timeframe bar (e.g., 15m or 1h) spanning $[T_{\text{open}}, T_{\text{close}}]$ is only finalized at $T_{\text{close}} = T_{\text{open}} + \Delta T_{\text{HTF}}$.
 
 When merging HTF features into execution base timeframes (1m or 5m):
 - Every HTF row's available timestamp is explicitly shifted to its closure: $T_{\text{avail}} = T + \Delta T_{\text{HTF}}$.
@@ -141,11 +143,11 @@ For each bar $i$:
 ```
 Price
   ▲
-  │   [Upper Barrier: +3.0 * ATR] --------------------> Label = +1 (TP Hit)
+  │   [Upper Barrier: +3.0 * ATR] -------------------> Label = +1 (TP Hit)
   │                                    /──\
-  │       Entry (Close) ───────>  ───/      \
+  │       Entry (Close) ─────────> ───/      \
   │                                           \───...-> Label = -1 (SL Hit)
-  │   [Lower Barrier: -1.0 * ATR] -------------------->
+  │   [Lower Barrier: -1.0 * ATR] ------------------->
   ┼───────────────────────────────────────────────────► Time (max H bars)
 ```
 
@@ -177,7 +179,7 @@ The engine compounds equity starting from `$100.00`:
   $$\text{Position Size} = \frac{E_t \times R}{SL_{\text{dist}}}$$
 - Position Notional Value:
   $$\text{Notional} = \text{Position Size} \times P_{\text{entry}}$$
-- Leverage Cap: Maximum allowable notional is bounded by $\text{Notional} \le 10 \times E_t$.
+- Leverage Cap: Maximum allowable notional is bounded by $\text{Notional} \le \text{MaxLeverage} \times E_t$.
 
 ### Realistic Friction Modeling
 - **Binance Futures Fees:** Taker fee (0.05% = 0.0005) on entry; Maker fee (0.02% = 0.0002) on TP/SL limit exit.
@@ -198,11 +200,97 @@ Unlike isolated single-pair backtests, the `GlobalUniverseScanner` simulates sim
 
 ---
 
-## 8. Decoupled Live Signal Generator & JSON Contract
+## 8. Dual-Mode Execution Engine (`execution.py`)
+
+The `DualModeExecutionEngine` supports both **PAPER** (local simulation) and **LIVE** (real Binance Futures via CCXT) execution in a unified interface.
+
+### Credential Management & Graceful Fallback
+- API keys are loaded from `.env` via `python-dotenv` (`BINANCE_API_KEY`, `BINANCE_API_SECRET`).
+- On startup in LIVE mode, credentials are validated. If missing, empty, or dummy placeholders are detected:
+  - Logs: `[WARN] Valid live credentials not found. Falling back to PAPER mode.`
+  - Execution continues in PAPER mode; no crash.
+- `.env` is in `.gitignore`. `.env.example` is tracked as a safe template.
+
+### Dynamic Exchange Limit Validation & Sub-Minimum Trade Skipping
+- For every candidate, `get_symbol_limits(symbol)` queries Binance market metadata for `minNotional`, `minQty`, `stepSize`, `tickSize`.
+- If 5% equity risk sizing produces a notional below `minNotional` or a size below `minQty`:
+  - **No crash** — the candidate is logged and skipped:
+    ```
+    [SKIPPED_MIN_NOTIONAL] Symbol XYZ position size $A below exchange minNotional $B. Evaluating next top setup.
+    ```
+  - The engine immediately evaluates the **next highest-ML-confidence candidate** in the ranked queue.
+
+### Pure ML Probability Global Ranking
+Candidates from the universe scan are ranked **strictly by raw LightGBM `confidence` score descending** with no hardcoded symbol bias. The leaderboard is exposed via `engine.latest_scan_leaderboard`.
+
+### Binance `fetchOpenOrders` Warning Suppression
+`LiveExchangeAdapter` sets:
+```python
+self.exchange.options["fetchOpenOrders"] = {"warnWithoutSymbol": False}
+```
+This suppresses the CCXT rate-limit advisory emitted when `fetch_open_orders()` is called without a symbol. We call it intentionally during the global orphan sweep to scan all open orders across the account.
+
+### Two-Layer Trade Exit Detection (`check_and_process_exit`)
+
+```mermaid
+flowchart LR
+    A[Each daemon tick] --> B{Active trade?}
+    B -- No --> C[SCANNING PHASE]
+    B -- Yes --> D[MONITORING PHASE]
+    D --> E[Layer 1: Local price arithmetic\ncompare ticker vs TP SL levels]
+    D --> F["Layer 2: Live exchange reconciliation\nfetch_positions(symbol)"]
+    E -- Exit detected --> G[Closure Sweep]
+    F -- Position gone on exchange --> G
+    G --> H["Cancel orphan bracket orders\nUpdate active_trade_state.json CLOSED\nLog to audit"]
+    H --> C
+    C --> I[Full universe scan 500 symbols]
+    I --> J{Trade executed?}
+    J -- Yes --> D
+    J -- No --> A
+```
+
+**Layer 1 — Local price arithmetic:** Compares current ticker price against stored `stop_loss` and `take_profit` levels.
+
+**Layer 2 — Live exchange reconciliation (LIVE mode only):** Calls `LiveExchangeAdapter.verify_position_closed_on_exchange(symbol)` which queries `fetch_positions([symbol])`. If Binance reports zero contracts for the symbol, the position is confirmed closed — even if the local ticker price hasn't crossed the arithmetic barrier yet (e.g., a limit bracket order filled at a gap).
+
+This ensures the active-trade lock is **always released promptly**, preventing the daemon from being stuck waiting on a stale `active_trade_state.json` entry.
+
+---
+
+## 9. 24/7 Daemon Loop (`run_loop`)
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Scanning : No active trade
+    Scanning --> Monitoring : Trade executed
+    Scanning --> Idle : No setup above threshold
+    Monitoring --> ClosureSweep : TP/SL hit (local) OR position gone (exchange)
+    Monitoring --> Monitoring : Position still open, sleep poll_interval
+    ClosureSweep --> Scanning : Immediately resume scan
+    Scanning --> [*] : KeyboardInterrupt or max_iterations
+```
+
+### Lifecycle
+- **SCANNING PHASE:** Full parallel universe scan via `ThreadPoolExecutor`. Candidates ranked by ML confidence. Highest-probability valid trade (passing exchange limits) is executed.
+- **MONITORING PHASE:** Per-poll-interval tick checks both price arithmetic and exchange `fetch_positions`. No idle waiting — the daemon checks the active position every `poll_interval_sec` seconds.
+- **Closure Sweep:** Triggered the instant an exit is detected. Cancels all remaining bracket orders for the symbol. No orphan exposure.
+- **Immediate scan resume:** After closure, the next iteration starts scanning without sleeping, minimizing re-entry latency.
+
+### 24/7 Running Command
+```bash
+python cli.py execute --mode live --daemon --poll-interval 15 --threshold 0.35 --risk 0.05
+```
+
+Stop cleanly with **Ctrl+C**.
+
+---
+
+## 10. Decoupled Live Signal Generator & JSON Contract
 
 ### Real-Time Ingestion
 - Polls 24h market snapshots and candle feeds via CCXT Binance Futures API.
-- Evaluates active position state in [`signals/active_trade_state.json`](file:///home/sankar/Desktop/bot/signals/active_trade_state.json).
+- Evaluates active position state in [`signals/active_trade_state.json`](../signals/active_trade_state.json).
 - If no trade is open, evaluates universe candidate symbols concurrently using a thread pool.
 
 ### Atomic JSON Signal Contract (`signals/latest_signal.json`)
@@ -210,15 +298,18 @@ Signals are written using an atomic write pattern (writing to `.tmp` then perfor
 
 ```json
 {
-  "timestamp": "2026-10-18T02:15:55Z",
-  "symbol": "XRP/USDT:USDT",
+  "timestamp": "2026-10-18T07:45:00Z",
+  "symbol": "SOL/USDT:USDT",
   "direction": "LONG",
-  "confidence": 0.4303,
-  "entry_price": 1.2947,
-  "stop_loss": 1.2922,
-  "take_profit": 1.3022,
-  "risk_pct": 3.0,
-  "suggested_position_size": 749.4786,
+  "confidence": 0.84,
+  "entry_price": 142.50,
+  "stop_loss": 139.20,
+  "take_profit": 152.40,
+  "risk_pct": 5.0,
+  "dollar_risk": 5.00,
+  "leverage": 20,
+  "suggested_position_size": 2.15,
+  "mode": "LIVE",
   "status": "SIGNAL_GENERATED"
 }
 ```
@@ -226,13 +317,14 @@ Signals are written using an atomic write pattern (writing to `.tmp` then perfor
 ### Audit Trail (`logs/platform_audit.log`)
 Structured JSON Lines recording every system event:
 ```json
-{"timestamp": "2026-10-18T02:15:50.968123+00:00", "event_type": "TRADE_CLOSED", "message": "Position closed on BTC/USDT:USDT: STOP_LOSS", "data": {"symbol": "BTC/USDT:USDT", "exit_reason": "STOP_LOSS", "exit_price": 191511.4309, "realized_pnl": -3.00, "new_equity": 97.00}}
-{"timestamp": "2026-10-18T02:15:55.808451+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for XRP/USDT:USDT", "data": {"timestamp": "2026-10-18T02:15:55Z", "symbol": "XRP/USDT:USDT", "direction": "LONG", "confidence": 0.4303, "entry_price": 1.2947, "stop_loss": 1.2922, "take_profit": 1.3022, "risk_pct": 3.0, "suggested_position_size": 749.4786, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T07:45:00Z", "event_type": "DAEMON_TRADE_OPENED", "message": "Daemon opened LONG on SOL/USDT:USDT (ML conf: 84.0%). Entering monitoring phase.", "data": {...}}
+{"timestamp": "2026-10-18T08:20:00Z", "event_type": "DAEMON_TRADE_CLOSED", "message": "Daemon detected closure of SOL/USDT:USDT (LONG) via TAKE_PROFIT. Resuming universe scan. Current equity: $105.00", "data": {...}}
+{"timestamp": "2026-10-18T08:20:00Z", "event_type": "SKIPPED_MIN_NOTIONAL", "message": "Symbol SHIB/USDT:USDT position size $0.30 below exchange minNotional $5.00. Evaluating next top setup.", "data": {...}}
 ```
 
 ---
 
-## 9. CLI Command Reference & Streamlit Guide
+## 11. CLI Command Reference & Streamlit Guide
 
 ### CLI Commands (`cli.py`)
 ```bash
@@ -252,10 +344,17 @@ python cli.py global-backtest --threshold 0.30 --risk 0.03 --capital 100.0
 python cli.py live-scan --threshold 0.35
 python cli.py live-scan --daemon --poll-interval 10 --threshold 0.35
 
-# 6. Disk Usage & Platform Status Meter
+# 6. Execution Engine — Single cycle (PAPER or LIVE)
+python cli.py execute --mode paper --threshold 0.35 --risk 0.05
+python cli.py execute --mode live  --threshold 0.35 --risk 0.05
+
+# 7. Execution Engine — 24/7 daemon (LIVE, polling every 15 seconds)
+python cli.py execute --mode live --daemon --poll-interval 15 --threshold 0.35 --risk 0.05
+
+# 8. Disk Usage & Platform Status Meter
 python cli.py status
 
-# 7. Disk Pruning Utility
+# 9. Disk Pruning Utility
 python cli.py prune-data --max-storage-gb 18.0
 ```
 
@@ -268,4 +367,35 @@ streamlit run app.py
 - **Tab 1 (Risk Sizing Optimizer):** Side-by-side comparison of 2%, 3%, and 5% account risk compounding from $100.
 - **Tab 2 (Global Universe Scanner):** Simultaneous 500+ symbol backtest with global equity curve and asset breakdown.
 - **Tab 3 (Decoupled Live Signals & Audit):** Formatted live signal card, active trade status, one-click scan button, and streaming audit log.
-- **Tab 4 (Single Symbol Drilldown):** Detailed feature analysis and LightGBM feature importance bar chart.
+- **Tab 4 (Execution):** Mode selection (PAPER/LIVE), real-time progress bar during scanning, candidate ranking leaderboard table, orphan sweep button.
+- **Tab 5 (Single Symbol Drilldown):** Detailed feature analysis and LightGBM feature importance bar chart.
+
+---
+
+## 12. Automated Test Suite
+
+Run all 18 tests:
+```bash
+python -m unittest tests/test_platform.py -v
+```
+
+| # | Test Name | What It Verifies |
+|---|---|---|
+| 1 | `test_01_synthetic_and_ccxt_data_pipeline` | Storage tracking, ZSTD Parquet compression |
+| 2 | `test_02_feature_engineering_integrity` | Momentum, volume, volatility indicator formulas |
+| 3 | `test_03_timeframe_alignment_and_asof_merge` | Backward `merge_asof` with zero lookahead bias |
+| 4 | `test_04_triple_barrier_labeling_and_class_distribution` | Dynamic ATR 1:3 RR barriers |
+| 5 | `test_05_purged_group_time_series_cv_and_lightgbm` | Purged Walk-Forward CV |
+| 6 | `test_06_compounding_risk_optimizer` | Compounding equity from $100 at 2%, 3%, 5% |
+| 7 | `test_07_global_universe_scanner_single_trade_invariance` | Strict 1-trade global invariance |
+| 8 | `test_08_rolling_batch_training_and_disk_purging` | Incremental LightGBM + raw Parquet purging |
+| 9 | `test_09_live_signals_emission_and_audit` | JSON signal structure + audit trail |
+| 10 | `test_10_cli_commands` | Typer CLI commands |
+| 11 | `test_11_execution_engine_paper_mode_and_orphan_cleanup` | PaperWallet lifecycle + orphan sweep |
+| 12 | `test_12_precise_5pct_risk_sizing_and_leverage` | Exact 5% risk against account equity |
+| 13 | `test_13_feature_importance_booster_interface` | Booster interface without `NotFittedError` |
+| 14 | `test_14_credential_validation_and_graceful_fallback` | Graceful PAPER fallback on bad keys |
+| 15 | `test_15_dynamic_limits_and_sub_minimum_skipping` | `SKIPPED_MIN_NOTIONAL` + fallback to next candidate |
+| 16 | `test_16_pure_ml_probability_ranking_and_progress_callback` | Strict confidence sort + progress callback |
+| 17 | `test_17_daemon_run_loop_scanning_and_monitoring_phases` | SCANNING ↔ MONITORING phase transitions + closure resume |
+| 18 | `test_18_fetch_open_orders_warning_suppressed` | `fetchOpenOrders.warnWithoutSymbol = False` on adapter |

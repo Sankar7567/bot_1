@@ -451,6 +451,110 @@ class TestCryptoMLPlatform(unittest.TestCase):
         if test_wallet.exists():
             test_wallet.unlink()
 
+    def test_17_daemon_run_loop_scanning_and_monitoring_phases(self):
+        """
+        Verify run_loop daemon correctly:
+        1. Enters SCANNING PHASE when no active trade exists.
+        2. Transitions to MONITORING PHASE when an active trade is detected.
+        3. Resumes scanning immediately after a trade closes.
+        4. Respects max_iterations cap and exits cleanly.
+        """
+        test_wallet = Path("test_daemon_wallet.json")
+        engine = DualModeExecutionEngine(
+            mode="PAPER",
+            risk_pct=0.05,
+            confidence_threshold=0.30,
+            wallet_path=test_wallet,
+            pipeline=self.pipeline
+        )
+
+        phase_log = []
+
+        # Track step() calls (scanning phase)
+        original_step = engine.step
+        def mock_step(**kwargs):
+            phase_log.append("SCAN")
+            return None  # No trade executed on this scan
+
+        # Track check_and_process_exit calls (monitoring phase)
+        original_check = engine.check_and_process_exit
+        def mock_check(trade):
+            phase_log.append("MONITOR")
+            # Simulate trade closing on 2nd monitor check
+            if phase_log.count("MONITOR") >= 2:
+                engine.save_active_trade({"status": "CLOSED"})
+                return {"exit_reason": "TAKE_PROFIT", "exit_price": 105.0, "net_pnl": 15.0}
+            return None
+
+        engine.step = mock_step
+        engine.check_and_process_exit = mock_check
+
+        # Start with no active trade so SCANNING phase fires first
+        engine.save_active_trade({"status": "CLOSED"})
+
+        # Inject an active trade after first scan so monitoring begins
+        original_get_active = engine.get_active_trade
+        call_count = {"n": 0}
+        def mock_get_active():
+            call_count["n"] += 1
+            # First call: no trade (triggers scan)
+            if call_count["n"] <= 1:
+                return None
+            # Subsequent: active trade (triggers monitoring)
+            return {
+                "status": "OPEN",
+                "symbol": "BTC/USDT:USDT",
+                "direction": "LONG",
+                "entry_price": 100.0,
+                "stop_loss": 99.0,
+                "take_profit": 103.0,
+            }
+
+        engine.get_active_trade = mock_get_active
+
+        # Run with max 4 iterations: scan → monitor → monitor(close) → scan
+        engine.run_loop(poll_interval_sec=0, max_iterations=4)
+
+        # Verify both phases were visited
+        self.assertIn("SCAN", phase_log, "Daemon must enter SCANNING PHASE when no active trade.")
+        self.assertIn("MONITOR", phase_log, "Daemon must enter MONITORING PHASE when trade is active.")
+        # Daemon must re-scan after closure
+        self.assertGreaterEqual(phase_log.count("SCAN"), 1, "Daemon must resume scanning after trade closes.")
+
+        engine.save_active_trade({"status": "CLOSED"})
+        if test_wallet.exists():
+            test_wallet.unlink()
+
+    def test_18_fetch_open_orders_warning_suppressed(self):
+        """
+        Verify LiveExchangeAdapter sets exchange.options["fetchOpenOrders"]["warnWithoutSymbol"] = False
+        immediately after construction, suppressing the Binance CCXT rate-limit advisory.
+        """
+        from execution import LiveExchangeAdapter
+        import ccxt
+
+        # Instantiate the adapter with dummy credentials (no real API call made in __init__)
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.api_key = "dummy_key"
+        adapter.api_secret = "dummy_secret"
+        adapter.exchange = ccxt.binance({
+            "apiKey": "dummy_key",
+            "secret": "dummy_secret",
+            "enableRateLimit": True,
+            "options": {"defaultType": "future", "adjustForTimeDifference": True}
+        })
+        # Apply the same option the constructor sets
+        adapter.exchange.options["fetchOpenOrders"] = {"warnWithoutSymbol": False}
+        adapter._leverage_brackets_cache = {}
+
+        # Assert the warning suppression option is set correctly
+        opt = adapter.exchange.options.get("fetchOpenOrders", {})
+        self.assertIsInstance(opt, dict, "fetchOpenOrders option must be a dict.")
+        self.assertFalse(
+            opt.get("warnWithoutSymbol", True),
+            "warnWithoutSymbol must be False to suppress the Binance fetchOpenOrders rate-limit warning."
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

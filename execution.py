@@ -20,6 +20,24 @@ Features:
   - Startup Sweep: Cancels dangling, unlinked, or leftover pending orders on boot.
   - Closure Sweep: The exact moment an active trade closes, immediately sweeps and cancels
     all remaining associated bracket orders to ensure zero orphan exposure.
+- 24/7 Daemon Loop (run_loop):
+  - SCANNING PHASE: Full ML universe scan across 500+ symbols when no trade is active.
+  - MONITORING PHASE: Tight TP/SL polling loop while a trade is open; checks BOTH local
+    price arithmetic AND live Binance fetch_positions() reconciliation so bracket fills
+    registered directly on the exchange are detected immediately.
+  - Trade closure triggers an instant Closure Sweep then immediately resumes scanning.
+- Binance fetchOpenOrders Warning Suppression:
+  - Sets exchange.options["fetchOpenOrders"]["warnWithoutSymbol"] = False to silence the
+    CCXT rate-limit advisory emitted when calling fetch_open_orders() without a symbol.
+    We intentionally call it without a symbol during the global orphan sweep.
+- Credential Management & Graceful Fallback:
+  - Loads BINANCE_API_KEY / BINANCE_API_SECRET from .env via python-dotenv.
+  - If keys are missing, empty, or dummy placeholders, emits a warning and falls back
+    to PAPER mode without crashing.
+- Dynamic Exchange Limit Validation & Sub-Minimum Skipping:
+  - Queries per-symbol minNotional, minQty, stepSize from Binance exchange metadata.
+  - If 5% risk sizing yields a position below the exchange minimum, logs
+    [SKIPPED_MIN_NOTIONAL] and evaluates the next highest-confidence candidate.
 """
 
 import os
@@ -285,6 +303,9 @@ class LiveExchangeAdapter:
                 "adjustForTimeDifference": True
             }
         })
+        # Suppress Binance CCXT warning about calling fetchOpenOrders without a symbol.
+        # We call it intentionally during the orphan sweep to scan all open orders globally.
+        self.exchange.options["fetchOpenOrders"] = {"warnWithoutSymbol": False}
         self._leverage_brackets_cache: Dict[str, int] = {}
 
     def fetch_equity_and_balance(self) -> Tuple[float, float]:
@@ -422,6 +443,30 @@ class LiveExchangeAdapter:
         except Exception as e:
             logger.error(f"Error during exchange orphan sweep: {e}")
             return 0
+
+    def verify_position_closed_on_exchange(self, symbol: str) -> bool:
+        """
+        Queries Binance Futures exchange to verify whether a position for the given
+        symbol is still open (non-zero contracts). Returns True if the position is
+        confirmed closed (zero size), False if still open or undetermined.
+
+        Used by the daemon loop to detect live TP/SL fills that occurred on the
+        exchange independently of local price tracking, ensuring the active-trade
+        lock is released promptly and the next scan cycle begins.
+        """
+        try:
+            positions = self.exchange.fetch_positions([symbol])
+            for pos in positions:
+                contracts = float(pos.get("contracts", 0.0) or pos.get("size", 0.0) or 0.0)
+                if abs(contracts) > 1e-6:
+                    # Position is still live on exchange
+                    return False
+            # No non-zero position found — confirmed closed
+            return True
+        except Exception as e:
+            logger.warning(f"[LIVE_CHECK] Could not verify position status for {symbol} on exchange: {e}")
+            # Default to not closed (safe assumption) to avoid spurious re-entry
+            return False
 
     def execute_bracket_trade(
         self,
@@ -648,35 +693,69 @@ class DualModeExecutionEngine:
 
     def check_and_process_exit(self, active_trade: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        Monitors active trade against market prices.
-        If Stop-Loss or Take-Profit is hit, executes closure and triggers immediate orphan cleanup sweep.
+        Monitors active trade against market prices AND verifies against live exchange positions.
+
+        Two-layer exit detection:
+          1. Local price arithmetic: Compares current ticker price against stored TP/SL levels.
+          2. Live exchange reconciliation (LIVE mode only): Queries Binance fetch_positions() to
+             detect fills that occurred on the exchange (e.g., limit TP/SL orders filled by broker)
+             even before the local ticker price check confirms the barrier breach.
+
+        If either layer detects closure, executes the Closure Sweep (cancels orphan bracket
+        orders), updates active_trade_state.json to CLOSED, logs to audit, and returns the
+        exit event dict to unblock the daemon loop for the next universe scan.
         """
         sym = active_trade["symbol"]
-        curr_price = self.fetch_live_ticker_price(sym)
-        if curr_price <= 0:
-            return None
-
         direction = active_trade["direction"]
         sl_price = active_trade["stop_loss"]
         tp_price = active_trade["take_profit"]
 
-        if direction == "LONG":
-            tp_hit = curr_price >= tp_price
-            sl_hit = curr_price <= sl_price
-        else:  # SHORT
-            tp_hit = curr_price <= tp_price
-            sl_hit = curr_price >= sl_price
+        # ── Layer 1: Live Exchange Reconciliation (LIVE mode) ────────────────────
+        # Detect TP/SL bracket fills that the exchange executed independently.
+        exchange_confirmed_closed = False
+        if self.mode == "LIVE" and self.live_adapter:
+            exchange_confirmed_closed = self.live_adapter.verify_position_closed_on_exchange(sym)
+            if exchange_confirmed_closed:
+                logger.info(
+                    f"[LIVE_CHECK] Exchange confirms position on {sym} is CLOSED "
+                    f"(TP/SL bracket filled). Triggering closure sweep."
+                )
 
-        if not (tp_hit or sl_hit):
-            # In paper mode, update unrealized PnL
-            if self.mode == "PAPER" and self.paper_wallet:
+        # ── Layer 2: Local Price Arithmetic ──────────────────────────────────────
+        curr_price = self.fetch_live_ticker_price(sym)
+        tp_hit, sl_hit = False, False
+
+        if curr_price > 0:
+            if direction == "LONG":
+                tp_hit = curr_price >= tp_price
+                sl_hit = curr_price <= sl_price
+            else:  # SHORT
+                tp_hit = curr_price <= tp_price
+                sl_hit = curr_price >= sl_price
+
+        # ── If neither layer detected an exit, trade is still active ─────────────
+        if not (tp_hit or sl_hit or exchange_confirmed_closed):
+            # Update unrealized PnL in paper mode
+            if self.mode == "PAPER" and self.paper_wallet and curr_price > 0:
                 self.paper_wallet.update_unrealized_pnl(curr_price)
             return None
 
-        # Exit triggered!
-        exit_reason = "TAKE_PROFIT" if tp_hit else "STOP_LOSS"
-        exit_price = tp_price if tp_hit else sl_price
-        logger.info(f"[{exit_reason}] Active position on {sym} triggered exit at {exit_price}")
+        # ── Exit Triggered ────────────────────────────────────────────────────────
+        if exchange_confirmed_closed and not (tp_hit or sl_hit):
+            # Exchange closed the position but price hasn't confirmed a local barrier yet.
+            # Use last known price and infer exit reason from position relative to entry.
+            exit_price = curr_price if curr_price > 0 else float(active_trade.get("entry_price", 0.0))
+            entry_price = float(active_trade.get("entry_price", exit_price))
+            pnl_sign = (exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price)
+            exit_reason = "TAKE_PROFIT" if pnl_sign >= 0 else "STOP_LOSS"
+            logger.info(
+                f"[EXCHANGE_CLOSED] Position on {sym} closed on exchange at ~${exit_price:.4f} "
+                f"(inferred reason: {exit_reason})"
+            )
+        else:
+            exit_reason = "TAKE_PROFIT" if tp_hit else "STOP_LOSS"
+            exit_price = tp_price if tp_hit else sl_price
+            logger.info(f"[{exit_reason}] Active position on {sym} triggered exit at ${exit_price:.4f}")
 
         exit_event: Dict[str, Any] = {}
 
@@ -686,7 +765,7 @@ class DualModeExecutionEngine:
                 exit_reason=exit_reason
             )
         elif self.mode == "LIVE" and self.live_adapter:
-            # Closure sweep: Immediately cancel all remaining orders for symbol
+            # Closure sweep: immediately cancel all remaining bracket orders for symbol
             self.live_adapter.cancel_all_orders_for_symbol(sym)
             self.live_adapter.sweep_all_orphan_orders()
             equity = self.get_current_equity()
@@ -1138,18 +1217,118 @@ class DualModeExecutionEngine:
         return executed_payload
 
     def run_loop(self, poll_interval_sec: int = 10, max_iterations: Optional[int] = None) -> None:
-        """Runs the execution engine continuously in a polling loop."""
+        """
+        Runs the execution engine as a continuous 24/7 daemon loop.
+
+        Lifecycle per iteration:
+          ┌─ SCANNING PHASE ───────────────────────────────────────────────────────┐
+          │  No active trade found → Full universe scan across 500+ symbols.       │
+          │  Pure ML probability ranking → Select highest-conviction valid trade.  │
+          │  If a trade is executed → transition to MONITORING PHASE.             │
+          └────────────────────────────────────────────────────────────────────────┘
+          ┌─ MONITORING PHASE ─────────────────────────────────────────────────────┐
+          │  Active trade detected → Tick-by-tick TP/SL monitoring sub-loop.      │
+          │  Two-layer exit detection every poll_interval_sec seconds:            │
+          │    Layer 1: Local price arithmetic (ticker vs TP/SL levels).          │
+          │    Layer 2: Live exchange reconciliation (fetch_positions check).      │
+          │  Once exit confirmed → Closure sweep → Log closure → Resume SCANNING. │
+          └────────────────────────────────────────────────────────────────────────┘
+
+        Never exits unless:
+          - KeyboardInterrupt (Ctrl+C by operator)
+          - max_iterations reached (test / bounded run)
+        """
         append_audit_log(
             "ENGINE_STARTED",
-            f"Execution Engine started in {self.mode} mode (Interval: {poll_interval_sec}s, 5% Risk)"
+            f"[DAEMON] Execution Engine started in {self.mode} mode | "
+            f"Poll Interval: {poll_interval_sec}s | Risk: {self.risk_pct*100:.1f}% | "
+            f"Threshold: {self.confidence_threshold}"
         )
+        logger.info(
+            f"[DAEMON] 24/7 daemon loop active | Mode: {self.mode} | "
+            f"Interval: {poll_interval_sec}s | Risk: {self.risk_pct*100:.1f}%"
+        )
+
         iterations = 0
         try:
             while True:
-                self.step()
-                iterations += 1
-                if max_iterations and iterations >= max_iterations:
+                # ── Check iteration cap (used for tests / bounded runs) ──────────
+                if max_iterations is not None and iterations >= max_iterations:
+                    logger.info(f"[DAEMON] Reached max_iterations={max_iterations}. Exiting daemon loop.")
                     break
+
+                active_trade = self.get_active_trade()
+
+                if active_trade is not None:
+                    # ── MONITORING PHASE ─────────────────────────────────────────
+                    sym = active_trade.get("symbol", "UNKNOWN")
+                    direction = active_trade.get("direction", "?")
+                    entry = active_trade.get("entry_price", 0.0)
+                    sl = active_trade.get("stop_loss", 0.0)
+                    tp = active_trade.get("take_profit", 0.0)
+                    logger.info(
+                        f"[MONITOR] Active {direction} on {sym} | "
+                        f"Entry: ${entry:.4f} | SL: ${sl:.4f} | TP: ${tp:.4f} | "
+                        f"Watching for exit every {poll_interval_sec}s..."
+                    )
+                    exit_event = self.check_and_process_exit(active_trade)
+                    if exit_event is not None:
+                        # Trade closed — log summary and immediately return to scan
+                        equity = self.get_current_equity()
+                        exit_reason = exit_event.get("exit_reason", "UNKNOWN")
+                        exit_price = exit_event.get("exit_price", 0.0)
+                        net_pnl = exit_event.get("net_pnl", exit_event.get("final_equity", equity) - equity)
+                        logger.info(
+                            f"[DAEMON] Trade CLOSED | {sym} ({direction}) | "
+                            f"Exit: ${exit_price:.4f} via {exit_reason} | "
+                            f"Equity: ${equity:.2f} | Resuming universe scan..."
+                        )
+                        append_audit_log(
+                            "DAEMON_TRADE_CLOSED",
+                            f"Daemon detected closure of {sym} ({direction}) via {exit_reason}. "
+                            f"Resuming universe scan. Current equity: ${equity:.2f}",
+                            exit_event
+                        )
+                        # Immediately scan — skip sleep on closure to minimize re-entry latency
+                        iterations += 1
+                        continue
+                    else:
+                        logger.debug(
+                            f"[MONITOR] {sym} position still active. Next check in {poll_interval_sec}s."
+                        )
+                else:
+                    # ── SCANNING PHASE ───────────────────────────────────────────
+                    logger.info(
+                        f"[SCAN] No active trade. Starting universe scan across {len(self.symbols)} symbols..."
+                    )
+                    executed = self.step()
+                    if executed:
+                        sym_e = executed.get("symbol", "?")
+                        dir_e = executed.get("direction", "?")
+                        conf_e = executed.get("confidence", 0.0)
+                        equity = self.get_current_equity()
+                        logger.info(
+                            f"[DAEMON] Trade OPENED | {sym_e} ({dir_e}) | "
+                            f"ML Conf: {conf_e*100:.1f}% | Equity: ${equity:.2f}"
+                        )
+                        append_audit_log(
+                            "DAEMON_TRADE_OPENED",
+                            f"Daemon opened {dir_e} on {sym_e} (ML conf: {conf_e*100:.1f}%). "
+                            f"Entering monitoring phase.",
+                            executed
+                        )
+                    else:
+                        logger.info(
+                            f"[SCAN] No setup met threshold {self.confidence_threshold:.2f} or "
+                            f"all candidates were below exchange minimum size. Sleeping {poll_interval_sec}s."
+                        )
+
+                iterations += 1
                 time.sleep(poll_interval_sec)
+
         except KeyboardInterrupt:
-            append_audit_log("ENGINE_STOPPED", f"Execution Engine stopped by user after {iterations} iterations.")
+            logger.info("[DAEMON] Keyboard interrupt received. Shutting down daemon loop gracefully.")
+            append_audit_log(
+                "ENGINE_STOPPED",
+                f"Execution Engine daemon stopped by operator after {iterations} iterations."
+            )

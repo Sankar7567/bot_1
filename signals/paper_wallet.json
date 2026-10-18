@@ -1,12 +1,62 @@
 {
-  "equity": 100.0,
-  "available_balance": 100.0,
-  "margin_used": 0.0,
-  "realized_pnl": 0.0,
-  "unrealized_pnl": 0.0,
-  "total_fees_paid": 0.0,
-  "active_position": null,
-  "pending_orders": [],
-  "trade_history": [],
-  "updated_at": "2026-10-18T06:02:27.635145+00:00"
+  "equity": 168.1873,
+  "available_balance": 0.0,
+  "margin_used": 169.4669,
+  "realized_pnl": -5.6526,
+  "unrealized_pnl": -1.8639,
+  "total_fees_paid": 4.1928,
+  "active_position": {
+    "symbol": "ASML/USDT:USDT",
+    "direction": "SHORT",
+    "entry_price": 1645.31,
+    "size": 2.06,
+    "notional": 3389.3386,
+    "leverage": 20,
+    "margin": 169.46693,
+    "stop_loss": 1646.2602244703824,
+    "take_profit": 1642.4593265888527,
+    "entry_time": "2026-10-18T06:36:40.172051+00:00",
+    "unrealized_pnl": 0.0
+  },
+  "pending_orders": [
+    {
+      "order_id": "paper_sl_1792305400172",
+      "symbol": "ASML/USDT:USDT",
+      "type": "STOP_MARKET",
+      "side": "BUY",
+      "stop_price": 1646.2602244703824,
+      "amount": 2.06,
+      "status": "OPEN",
+      "reduce_only": true
+    },
+    {
+      "order_id": "paper_tp_1792305400172",
+      "symbol": "ASML/USDT:USDT",
+      "type": "TAKE_PROFIT_MARKET",
+      "side": "BUY",
+      "stop_price": 1642.4593265888527,
+      "amount": 2.06,
+      "status": "OPEN",
+      "reduce_only": true
+    }
+  ],
+  "trade_history": [
+    {
+      "symbol": "JTO/USDT:USDT",
+      "direction": "SHORT",
+      "entry_price": 0.4435,
+      "exit_price": 0.4449,
+      "size": 3484.0,
+      "leverage": 20,
+      "margin": 77.2577,
+      "gross_pnl": -4.8776,
+      "exit_fee": 0.775,
+      "net_pnl": -5.6526,
+      "exit_reason": "STOP_LOSS",
+      "entry_time": "2026-10-18T06:08:58.855948+00:00",
+      "exit_time": "2026-10-18T06:32:13.173309+00:00",
+      "final_equity": 170.8325
+    }
+  ],
+  "updated_at": "2026-10-18T06:36:40.172078+00:00"
 }
