@@ -25,7 +25,7 @@ bot/
 ├── requirements.txt           # Core system dependencies
 ├── .env.example               # Template for Binance API credentials (copy to .env, never commit)
 ├── tests/
-│   └── test_platform.py       # Comprehensive automated test suite (27 test cases)
+│   └── test_platform.py       # Comprehensive automated test suite (31 test cases)
 ├── docs/
 │   └── ARCHITECTURE.md        # Complete quantitative system manual & data flow diagrams
 ├── signals/
@@ -38,8 +38,10 @@ bot/
 │   ├── raw/{tf}/{sym}.parquet
 │   └── features/{tf}/{sym}.parquet
 └── models/
-    ├── lightgbm_crypto_model.txt
-    └── lightgbm_crypto_model_metadata.json
+    ├── lightgbm_crypto_model_v1.txt           # v1 Baseline model weights
+    ├── lightgbm_crypto_model_v1_metadata.json # v1 Feature schema (75 features)
+    ├── lightgbm_crypto_model_v2.txt           # v2 Trend-Following model weights
+    └── lightgbm_crypto_model_v2_metadata.json # v2 Feature schema (111 features)
 ```
 
 ---

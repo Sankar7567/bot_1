@@ -861,7 +861,8 @@ class DualModeExecutionEngine:
         symbols: Optional[List[str]] = None,
         initial_paper_equity: float = 100.0,
         wallet_path: Optional[Path] = None,
-        pipeline: Optional[DataPipeline] = None
+        pipeline: Optional[DataPipeline] = None,
+        model_version: str = "v1"
     ):
         self.mode = mode.upper()
         if self.mode not in ["PAPER", "LIVE"]:
@@ -875,8 +876,9 @@ class DualModeExecutionEngine:
 
         self.pipeline = pipeline or DataPipeline()
         self.fe = FeatureEngineer(self.pipeline)
-        self.trainer = ModelTrainer(pipeline=self.pipeline)
-        self.trainer.load_model()
+        self.model_version = model_version
+        self.trainer = ModelTrainer(pipeline=self.pipeline, model_version=model_version)
+        self.trainer.load_model(version=model_version)
         self.latest_scan_leaderboard: List[Dict[str, Any]] = []
 
         # Initialize Mode Adapter

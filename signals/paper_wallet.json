@@ -1,62 +1,12 @@
 {
-  "equity": 161.0847,
-  "available_balance": 0.0,
-  "margin_used": 162.7087,
-  "realized_pnl": -5.6526,
-  "unrealized_pnl": -0.0968,
-  "total_fees_paid": 11.2954,
-  "active_position": {
-    "symbol": "GOOGL/USDT:USDT",
-    "direction": "SHORT",
-    "entry_price": 339.33,
-    "size": 9.59,
-    "notional": 3254.1746999999996,
-    "leverage": 20,
-    "margin": 162.708735,
-    "stop_loss": 339.45266526019964,
-    "take_profit": 338.962004219401,
-    "entry_time": "2026-10-18T07:02:18.440310+00:00",
-    "unrealized_pnl": 0.0
-  },
-  "pending_orders": [
-    {
-      "order_id": "paper_sl_1792306938440",
-      "symbol": "GOOGL/USDT:USDT",
-      "type": "STOP_MARKET",
-      "side": "BUY",
-      "stop_price": 339.45266526019964,
-      "amount": 9.59,
-      "status": "OPEN",
-      "reduce_only": true
-    },
-    {
-      "order_id": "paper_tp_1792306938440",
-      "symbol": "GOOGL/USDT:USDT",
-      "type": "TAKE_PROFIT_MARKET",
-      "side": "BUY",
-      "stop_price": 338.962004219401,
-      "amount": 9.59,
-      "status": "OPEN",
-      "reduce_only": true
-    }
-  ],
-  "trade_history": [
-    {
-      "symbol": "JTO/USDT:USDT",
-      "direction": "SHORT",
-      "entry_price": 0.4435,
-      "exit_price": 0.4449,
-      "size": 3484.0,
-      "leverage": 20,
-      "margin": 77.2577,
-      "gross_pnl": -4.8776,
-      "exit_fee": 0.775,
-      "net_pnl": -5.6526,
-      "exit_reason": "STOP_LOSS",
-      "entry_time": "2026-10-18T06:08:58.855948+00:00",
-      "exit_time": "2026-10-18T06:32:13.173309+00:00",
-      "final_equity": 170.8325
-    }
-  ],
-  "updated_at": "2026-10-18T07:02:18.440339+00:00"
+  "equity": 100.0,
+  "available_balance": 100.0,
+  "margin_used": 0.0,
+  "realized_pnl": 0.0,
+  "unrealized_pnl": 0.0,
+  "total_fees_paid": 0.0,
+  "active_position": null,
+  "pending_orders": [],
+  "trade_history": [],
+  "updated_at": "2026-10-18T09:41:00.000000+00:00"
 }

@@ -34,18 +34,19 @@ def apply_triple_barrier_labeling(
     df: pd.DataFrame,
     sl_atr_mult: float = 1.0,
     tp_atr_mult: float = 3.0,
-    max_holding_bars: int = 24
+    max_holding_bars: int = 24,
+    symmetric_directional: bool = True
 ) -> pd.DataFrame:
     """
-    Applies the Triple-Barrier Method to generate trade labels with strict 1:3 Risk-Reward:
-    - Upper barrier: Close + (tp_atr_mult * ATR)
-    - Lower barrier: Close - (sl_atr_mult * ATR)
-    - Time barrier: max_holding_bars
+    Applies the Triple-Barrier Method to generate trade labels with strict 1:3 Risk-Reward.
 
-    Labels:
-      1: Hit Take-Profit first
-     -1: Hit Stop-Loss first
-      0: Time horizon exit (neither barrier hit)
+    When symmetric_directional=True (Trend-Following balanced mode):
+      1: High-conviction LONG breakout (Price reaches +3.0 * ATR before dropping 1.0 * ATR)
+     -1: High-conviction SHORT breakdown (Price drops -3.0 * ATR before rising 1.0 * ATR)
+      0: Time horizon exit or neutral chop (neither 3.0 * ATR target reached within holding window)
+
+    This eliminates the short-only mean-reversion bias by treating Long and Short
+    breakout momentum symmetrically without structural probability distortion.
     """
     df = df.copy().reset_index(drop=True)
     n = len(df)
@@ -54,7 +55,7 @@ def apply_triple_barrier_labeling(
     high = df["high"].to_numpy()
     low = df["low"].to_numpy()
     open_ = df["open"].to_numpy()
-    atr = df["atr_14"].to_numpy()
+    atr = df["atr_14"].to_numpy() if "atr_14" in df.columns else (close * 0.01)
 
     labels = np.zeros(n, dtype=np.int8)
     exit_bars = np.zeros(n, dtype=np.int32)
@@ -68,51 +69,99 @@ def apply_triple_barrier_labeling(
         if atr_i <= 0 or np.isnan(atr_i):
             atr_i = c_i * 0.01
 
-        upper_barrier = c_i + (tp_atr_mult * atr_i)
-        lower_barrier = c_i - (sl_atr_mult * atr_i)
-
         end_idx = min(i + max_holding_bars + 1, n)
-        event_label = 0
-        event_exit = end_idx - 1
-        event_ret = (close[event_exit] - c_i) / c_i
 
-        for j in range(i + 1, end_idx):
-            h_j = high[j]
-            l_j = low[j]
-            o_j = open_[j]
+        if symmetric_directional:
+            # Symmetric Evaluation: Both Long and Short require 3:1 Risk-Reward
+            long_tp = c_i + (tp_atr_mult * atr_i)
+            long_sl = c_i - (sl_atr_mult * atr_i)
+            short_tp = c_i - (tp_atr_mult * atr_i)
+            short_sl = c_i + (sl_atr_mult * atr_i)
 
-            tp_breached = h_j >= upper_barrier
-            sl_breached = l_j <= lower_barrier
+            long_success = False
+            long_exit_j = end_idx - 1
+            for j in range(i + 1, end_idx):
+                if low[j] <= long_sl:
+                    break
+                if high[j] >= long_tp:
+                    long_success = True
+                    long_exit_j = j
+                    break
 
-            if tp_breached and not sl_breached:
-                event_label = 1
-                event_exit = j
-                event_ret = (upper_barrier - c_i) / c_i
-                break
-            elif sl_breached and not tp_breached:
-                event_label = -1
-                event_exit = j
-                event_ret = (lower_barrier - c_i) / c_i
-                break
-            elif tp_breached and sl_breached:
-                # Intra-candle ambiguity resolution:
-                # If opening price is closer to lower barrier, assume SL hit first (conservative risk management)
-                dist_to_sl = abs(o_j - lower_barrier)
-                dist_to_tp = abs(o_j - upper_barrier)
-                if dist_to_sl <= dist_to_tp:
-                    event_label = -1
-                    event_ret = (lower_barrier - c_i) / c_i
+            short_success = False
+            short_exit_j = end_idx - 1
+            for j in range(i + 1, end_idx):
+                if high[j] >= short_sl:
+                    break
+                if low[j] <= short_tp:
+                    short_success = True
+                    short_exit_j = j
+                    break
+
+            if long_success and not short_success:
+                labels[i] = 1
+                exit_bars[i] = long_exit_j
+                barrier_returns[i] = (long_tp - c_i) / c_i
+            elif short_success and not long_success:
+                labels[i] = -1
+                exit_bars[i] = short_exit_j
+                barrier_returns[i] = (c_i - short_tp) / c_i
+            elif long_success and short_success:
+                if long_exit_j <= short_exit_j:
+                    labels[i] = 1
+                    exit_bars[i] = long_exit_j
+                    barrier_returns[i] = (long_tp - c_i) / c_i
                 else:
+                    labels[i] = -1
+                    exit_bars[i] = short_exit_j
+                    barrier_returns[i] = (c_i - short_tp) / c_i
+            else:
+                labels[i] = 0
+                exit_bars[i] = end_idx - 1
+                barrier_returns[i] = (close[end_idx - 1] - c_i) / c_i
+
+        else:
+            # Legacy Single-Side Long Barrier
+            upper_barrier = c_i + (tp_atr_mult * atr_i)
+            lower_barrier = c_i - (sl_atr_mult * atr_i)
+            event_label = 0
+            event_exit = end_idx - 1
+            event_ret = (close[event_exit] - c_i) / c_i
+
+            for j in range(i + 1, end_idx):
+                h_j = high[j]
+                l_j = low[j]
+                o_j = open_[j]
+
+                tp_breached = h_j >= upper_barrier
+                sl_breached = l_j <= lower_barrier
+
+                if tp_breached and not sl_breached:
                     event_label = 1
+                    event_exit = j
                     event_ret = (upper_barrier - c_i) / c_i
-                event_exit = j
-                break
+                    break
+                elif sl_breached and not tp_breached:
+                    event_label = -1
+                    event_exit = j
+                    event_ret = (lower_barrier - c_i) / c_i
+                    break
+                elif tp_breached and sl_breached:
+                    dist_to_sl = abs(o_j - lower_barrier)
+                    dist_to_tp = abs(o_j - upper_barrier)
+                    if dist_to_sl <= dist_to_tp:
+                        event_label = -1
+                        event_ret = (lower_barrier - c_i) / c_i
+                    else:
+                        event_label = 1
+                        event_ret = (upper_barrier - c_i) / c_i
+                    event_exit = j
+                    break
 
-        labels[i] = event_label
-        exit_bars[i] = event_exit
-        barrier_returns[i] = event_ret
+            labels[i] = event_label
+            exit_bars[i] = event_exit
+            barrier_returns[i] = event_ret
 
-    # Last rows where future horizon is truncated receive label 0
     df["label"] = labels
     df["exit_bar"] = exit_bars
     df["barrier_return"] = barrier_returns
@@ -121,13 +170,57 @@ def apply_triple_barrier_labeling(
 
 
 class ModelTrainer:
-    def __init__(self, models_dir: str = "models", pipeline: Optional[DataPipeline] = None):
+    def __init__(
+        self,
+        models_dir: str = "models",
+        pipeline: Optional[DataPipeline] = None,
+        model_version: str = "v1"
+    ):
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.pipeline = pipeline or DataPipeline()
+        self.model_version = model_version
         self.feature_cols: List[str] = []
         self.model: Optional[lgb.LGBMClassifier] = None
         self.booster: Optional[lgb.Booster] = None
+
+    def resolve_model_name(self, model_name: Optional[str] = None, version: Optional[str] = None) -> str:
+        """
+        Resolves the concrete model file basename taking versioning into account.
+        - version 'v1' -> 'lightgbm_crypto_model_v1' (or 'lightgbm_crypto_model')
+        - version 'v2' -> 'lightgbm_crypto_model_v2'
+        - custom model_name -> stem of that name
+        """
+        ver = (version or self.model_version or "v1").lower().strip()
+        if model_name:
+            clean = model_name.lower().strip()
+            if clean in ("v1", "1"):
+                ver = "v1"
+            elif clean in ("v2", "2"):
+                ver = "v2"
+            elif clean in ("lightgbm_crypto_model", "lightgbm_crypto_model_v1", "lightgbm_crypto_model_v2"):
+                if version:
+                    ver = version.lower().strip()
+                elif clean == "lightgbm_crypto_model_v2":
+                    ver = "v2"
+                elif clean == "lightgbm_crypto_model_v1":
+                    ver = "v1"
+            else:
+                return Path(model_name).stem
+        else:
+            ver = (version or self.model_version or "v1").lower().strip()
+
+        if ver in ("v1", "1"):
+            v1_file = self.models_dir / "lightgbm_crypto_model_v1.txt"
+            if v1_file.exists():
+                return "lightgbm_crypto_model_v1"
+            legacy_file = self.models_dir / "lightgbm_crypto_model.txt"
+            if legacy_file.exists():
+                return "lightgbm_crypto_model"
+            return "lightgbm_crypto_model_v1"
+        elif ver in ("v2", "2"):
+            return "lightgbm_crypto_model_v2"
+        return f"lightgbm_crypto_model_{ver}"
 
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """Identifies pure feature columns, omitting metadata and labels."""
@@ -144,7 +237,8 @@ class ModelTrainer:
         sl_atr_mult: float = 1.0,
         tp_atr_mult: float = 3.0,
         max_holding_bars: int = 24,
-        max_samples_per_symbol: Optional[int] = 50000
+        max_samples_per_symbol: Optional[int] = 50000,
+        symmetric_directional: bool = True
     ) -> pd.DataFrame:
         """
         Loads engineered features across multiple symbols, applies Triple-Barrier labeling,
@@ -179,7 +273,8 @@ class ModelTrainer:
                     sub_df,
                     sl_atr_mult=sl_atr_mult,
                     tp_atr_mult=tp_atr_mult,
-                    max_holding_bars=max_holding_bars
+                    max_holding_bars=max_holding_bars,
+                    symmetric_directional=symmetric_directional
                 )
 
                 if max_samples_per_symbol and len(labeled_df) > max_samples_per_symbol:
@@ -201,7 +296,9 @@ class ModelTrainer:
         df: pd.DataFrame,
         n_splits: int = 5,
         embargo_pct: float = 0.01,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
+        save_as: Optional[str] = None,
+        version: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Executes Purged Walk-Forward Cross-Validation across time-series folds:
@@ -304,7 +401,9 @@ class ModelTrainer:
         self.model = best_model
         if hasattr(best_model, "booster_"):
             self.booster = best_model.booster_
-        self.save_model("lightgbm_crypto_model")
+        
+        target_name = save_as or (f"lightgbm_crypto_model_{version}" if version else None)
+        self.save_model(model_name=target_name, version=version)
 
         summary = {
             "n_splits": len(fold_metrics),
@@ -357,7 +456,7 @@ class ModelTrainer:
 
         return {}
 
-    def save_model(self, model_name: str = "lightgbm_crypto_model") -> None:
+    def save_model(self, model_name: Optional[str] = None, version: Optional[str] = None) -> None:
         """Saves LightGBM model weights and feature schema."""
         b = self.booster
         if b is None and self.model is not None:
@@ -366,22 +465,47 @@ class ModelTrainer:
         if b is None:
             return
         
-        model_path = self.models_dir / f"{model_name}.txt"
-        meta_path = self.models_dir / f"{model_name}_metadata.json"
+        resolved = self.resolve_model_name(model_name, version)
+        model_path = self.models_dir / f"{resolved}.txt"
+        meta_path = self.models_dir / f"{resolved}_metadata.json"
 
         b.save_model(str(model_path))
         with open(meta_path, "w") as f:
             json.dump({
                 "feature_cols": self.feature_cols,
                 "label_map": {-1: 0, 0: 1, 1: 2},
-                "inv_label_map": {0: -1, 1: 0, 2: 1}
+                "inv_label_map": {0: -1, 1: 0, 2: 1},
+                "model_version": version or self.model_version
             }, f, indent=2)
         logger.info(f"Saved model and metadata to {model_path}")
 
-    def load_model(self, model_name: str = "lightgbm_crypto_model") -> bool:
+        # If saving v1 or base, also maintain lightgbm_crypto_model.txt for full backwards compatibility
+        if resolved in ("lightgbm_crypto_model_v1", "lightgbm_crypto_model"):
+            base_model_path = self.models_dir / "lightgbm_crypto_model.txt"
+            base_meta_path = self.models_dir / "lightgbm_crypto_model_metadata.json"
+            if base_model_path != model_path:
+                b.save_model(str(base_model_path))
+                with open(base_meta_path, "w") as f:
+                    json.dump({
+                        "feature_cols": self.feature_cols,
+                        "label_map": {-1: 0, 1: 2, 0: 1},
+                        "inv_label_map": {0: -1, 1: 0, 2: 1},
+                        "model_version": "v1"
+                    }, f, indent=2)
+
+    def load_model(self, model_name: Optional[str] = None, version: Optional[str] = None) -> bool:
         """Loads LightGBM model weights and feature schema."""
-        model_path = self.models_dir / f"{model_name}.txt"
-        meta_path = self.models_dir / f"{model_name}_metadata.json"
+        resolved = self.resolve_model_name(model_name, version)
+        model_path = self.models_dir / f"{resolved}.txt"
+        meta_path = self.models_dir / f"{resolved}_metadata.json"
+
+        # Graceful fallback for v1 if specific v1 not on disk yet
+        if not model_path.exists() and "v1" in resolved:
+            fallback = self.models_dir / "lightgbm_crypto_model.txt"
+            fallback_meta = self.models_dir / "lightgbm_crypto_model_metadata.json"
+            if fallback.exists() and fallback_meta.exists():
+                model_path = fallback
+                meta_path = fallback_meta
 
         if not model_path.exists() or not meta_path.exists():
             return False
@@ -398,6 +522,12 @@ class ModelTrainer:
         self.model._n_classes = 3
         self.model.n_features_in_ = len(self.feature_cols)
         self.model._n_features = len(self.feature_cols)
+        if version:
+            self.model_version = version
+        elif "v2" in resolved:
+            self.model_version = "v2"
+        elif "v1" in resolved:
+            self.model_version = "v1"
         return True
 
     def predict_probabilities(self, df: pd.DataFrame) -> np.ndarray:

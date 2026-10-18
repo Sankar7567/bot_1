@@ -18,6 +18,7 @@ __pycache__/
 # Test & scratch temporary directories
 test_data/
 test_models/
+test_models_v2/
 test_batch_data/
 
 # Large local raw data parquet cache (preserve directories with .gitkeep)

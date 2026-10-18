@@ -72,12 +72,14 @@ class LiveSignalGenerator:
         max_leverage: float = 10.0,
         sl_atr_mult: float = 1.0,
         tp_atr_mult: float = 3.0,
-        pipeline: Optional[DataPipeline] = None
+        pipeline: Optional[DataPipeline] = None,
+        model_version: str = "v1"
     ):
         self.pipeline = pipeline or DataPipeline()
         self.fe = FeatureEngineer(self.pipeline)
-        self.trainer = ModelTrainer(pipeline=self.pipeline)
-        self.trainer.load_model()
+        self.model_version = model_version
+        self.trainer = ModelTrainer(pipeline=self.pipeline, model_version=model_version)
+        self.trainer.load_model(version=model_version)
 
         self._symbols = symbols
         self.base_timeframe = base_timeframe

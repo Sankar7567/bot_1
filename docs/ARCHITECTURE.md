@@ -112,6 +112,11 @@ sequenceDiagram
   - Average True Range (ATR 14) and Normalized ATR ($\text{NATR} = \frac{\text{ATR}}{\text{Close}} \times 100$)
   - Bollinger Bands (20, 2.0 std): Bandwidth $\frac{\text{Upper} - \text{Lower}}{\text{Middle}}$ and %B position $\frac{\text{Close} - \text{Lower}}{\text{Upper} - \text{Lower}}$
   - Exponential Moving Averages (EMA 20, 50, 200) and crossover differentials
+- **Trend-Following Momentum & Alignment (v2 Features):**
+  - **Average Directional Index (ADX 14):** Wilder's smoothed ADX, +DI, -DI, DI spread (+DI - -DI), and boolean `adx_trend_strong` ($\text{ADX} \ge 25$) to identify high-momentum trends.
+  - **EMA Slope Dynamics:** Multi-bar percentage slopes over 3-bar and 5-bar windows for EMA 20, EMA 50, and EMA 200, capturing acceleration and velocity.
+  - **EMA Structural Alignment:** Boolean flags `ema_alignment_bullish` ($\text{EMA}_{20} > \text{EMA}_{50} > \text{EMA}_{200}$) and `ema_alignment_bearish` ($\text{EMA}_{20} < \text{EMA}_{50} < \text{EMA}_{200}$) indicating verified directional regime.
+  - **MACD Histogram Momentum Continuation:** Histogram slope ($\Delta \text{Hist} = \text{Hist}_t - \text{Hist}_{t-1}$) and continuation flags (`macd_bullish_continuation`, `macd_bearish_continuation`) preventing premature mean-reversion counter-trend entries.
 
 ### Zero Look-Ahead Bias Enforcement
 A higher-timeframe bar (e.g., 15m or 1h) spanning $[T_{\text{open}}, T_{\text{close}}]$ is only finalized at $T_{\text{close}} = T_{\text{open}} + \Delta T_{\text{HTF}}$.
@@ -134,27 +139,49 @@ This ensures a 5-minute candle at 10:05 strictly sees the 1-hour candle that clo
 
 ## 5. Machine Learning Pipeline & Triple-Barrier Labeling
 
-### Dynamic ATR Triple-Barrier Method (Strict 1:3 Risk-Reward)
+### Symmetric Directional Triple-Barrier Method (Strict 1:3 Risk-Reward)
+To eliminate short-only mean-reversion distortion, the labeling engine supports **symmetric directional evaluation** (`symmetric_directional=True`):
 For each bar $i$:
-- **Take-Profit Barrier:** $P_{\text{TP}} = P_{\text{close}} + (3.0 \times \text{ATR}_i)$
-- **Stop-Loss Barrier:** $P_{\text{SL}} = P_{\text{close}} - (1.0 \times \text{ATR}_i)$
-- **Time Horizon Barrier:** $H = 24$ bars
+- **Long Breakout Evaluation:**
+  - Take-Profit: $P_{\text{Long TP}} = P_{\text{close}} + (3.0 \times \text{ATR}_i)$
+  - Stop-Loss: $P_{\text{Long SL}} = P_{\text{close}} - (1.0 \times \text{ATR}_i)$
+  - Validated if price hits $+3.0 \times \text{ATR}$ before falling $-1.0 \times \text{ATR}$.
+- **Short Breakdown Evaluation:**
+  - Take-Profit: $P_{\text{Short TP}} = P_{\text{close}} - (3.0 \times \text{ATR}_i)$
+  - Stop-Loss: $P_{\text{Short SL}} = P_{\text{close}} + (1.0 \times \text{ATR}_i)$
+  - Validated if price drops $-3.0 \times \text{ATR}$ before rising $+1.0 \times \text{ATR}$.
+- **Time Horizon Barrier:** $H = 24$ bars.
 
 ```
-Price
-  ▲
-  │   [Upper Barrier: +3.0 * ATR] -------------------> Label = +1 (TP Hit)
-  │                                    /──\
-  │       Entry (Close) ─────────> ───/      \
-  │                                           \───...-> Label = -1 (SL Hit)
-  │   [Lower Barrier: -1.0 * ATR] ------------------->
-  ┼───────────────────────────────────────────────────► Time (max H bars)
+Long Breakout (+1):
+Price ▲
+      │   [Long TP: +3.0 * ATR] -------------------> Label = +1 (Long Winner)
+      │                                    /──\
+      │       Entry (Close) ─────────> ───/      \
+      │   [Long SL: -1.0 * ATR] -------------------> Exit (Loss if breached first)
+
+Short Breakdown (-1):
+Price ▲
+      │   [Short SL: +1.0 * ATR] ------------------> Exit (Loss if breached first)
+      │       Entry (Close) ─────────> ───\      /
+      │                                    \──/
+      │   [Short TP: -3.0 * ATR] ------------------> Label = -1 (Short Winner)
 ```
 
 Labels are encoded as:
-- **`1` (Take-Profit hit first):** Target long entry winner.
-- **`-1` (Stop-Loss hit first):** Adverse movement.
-- **`0` (Time expiry):** Neither barrier breached within $H$ bars.
+- **`1` (Long Winner):** Clean $+3.0 \times \text{ATR}$ expansion without adverse $-1.0 \times \text{ATR}$ drawdown.
+- **`-1` (Short Winner):** Clean $-3.0 \times \text{ATR}$ breakdown without adverse $+1.0 \times \text{ATR}$ runup.
+- **`0` (Neutral / Chop):** Neither $3:1$ target reached within holding window $H$.
+
+### Multi-Model Versioning Architecture (`v1` vs `v2`)
+The platform supports side-by-side versioned model checkpoints:
+- **`v1` (Baseline):** Trained on 75 original multi-timeframe momentum, volume, and volatility indicators.
+  - Weights: `models/lightgbm_crypto_model_v1.txt` (and backward-compatible `models/lightgbm_crypto_model.txt`)
+  - Schema: `models/lightgbm_crypto_model_v1_metadata.json`
+- **`v2` (Trend-Following):** Trained on 111 features incorporating ADX, multi-period EMA slopes, and MACD continuation indicators, paired with symmetric directional triple-barrier labeling.
+  - Weights: `models/lightgbm_crypto_model_v2.txt`
+  - Schema: `models/lightgbm_crypto_model_v2_metadata.json`
+- **Switching:** Controlled via CLI `--model v1` / `--model v2` and Streamlit sidebar radio toggle.
 
 ### Purged Walk-Forward Cross-Validation
 - Multi-fold temporal splits preserving chronological order.

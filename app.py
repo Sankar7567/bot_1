@@ -82,21 +82,34 @@ st.markdown("""
 
 
 @st.cache_resource
-def get_platform_components():
-    """Initializes and caches platform singletons."""
+def get_platform_components(model_version: str = "v1"):
+    """Initializes and caches platform singletons for the selected model version."""
     pipeline = DataPipeline()
     feature_engineer = FeatureEngineer(pipeline)
-    trainer = ModelTrainer(pipeline=pipeline)
-    trainer.load_model()
+    trainer = ModelTrainer(pipeline=pipeline, model_version=model_version)
+    trainer.load_model(version=model_version)
     scanner = GlobalUniverseScanner(pipeline=pipeline)
     return pipeline, feature_engineer, trainer, scanner
 
 
-pipeline, fe, trainer, scanner = get_platform_components()
-
 # --- SIDEBAR CONFIGURATION ---
 st.sidebar.title("⚡ Control Panel")
 st.sidebar.markdown("---")
+
+# Model Version Selector (must be first — drives cache key)
+st.sidebar.subheader("🤖 Model Version")
+model_version_sel = st.sidebar.radio(
+    "Active Model",
+    ["v1", "v2"],
+    index=0,
+    help=(
+        "**v1** — Baseline LightGBM model (original feature set, 75 features). "
+        "**v2** — Trend-Following model with ADX, EMA slopes & MACD continuation (111 features). "
+        "Requires retraining with `rolling-train --model-version v2` before use."
+    )
+)
+
+pipeline, fe, trainer, scanner = get_platform_components(model_version_sel)
 
 # Execution Engine Mode
 st.sidebar.subheader("🕹️ Execution Mode")
@@ -169,12 +182,13 @@ st.title("⚡ Binance Futures ML Crypto Research & Execution Platform")
 st.markdown("Dual-Mode Production System with Isolated Margin, Dynamic Max Leverage, 5% Risk Sizing, and Automated Orphan Cleanup.")
 
 # Quick Status Bar
-top_cols = st.columns(5)
+top_cols = st.columns(6)
 top_cols[0].metric("Mode", exec_mode)
 top_cols[1].metric("Focal Asset", selected_symbol)
 top_cols[2].metric("Starting Capital", f"${initial_capital:.2f}")
 top_cols[3].metric("Risk Setup", f"{int(risk_pct_val*100)}% Risk | 1:{rr_ratio:.1f} RR")
-top_cols[4].metric("Model State", "Active & Loaded" if trainer.model or trainer.booster else "Unloaded")
+top_cols[4].metric("Model Version", model_version_sel.upper())
+top_cols[5].metric("Model State", "Active & Loaded" if trainer.model or trainer.booster else "Unloaded")
 
 st.markdown("---")
 
@@ -233,7 +247,8 @@ with tab_execution:
                     risk_pct=risk_pct_val,
                     confidence_threshold=confidence_threshold,
                     base_timeframe=timeframe,
-                    symbols=symbol_choices
+                    symbols=symbol_choices,
+                    model_version=model_version_sel
                 )
                 trade_res = engine.step(progress_callback=ui_progress_callback)
                 progress_slot.empty()
@@ -262,7 +277,8 @@ with tab_execution:
                         mode=exec_mode,
                         api_key=api_key,
                         api_secret=api_secret,
-                        symbols=symbol_choices
+                        symbols=symbol_choices,
+                        model_version=model_version_sel
                     )
                     engine.startup_sweep()
                     st.success("Orphan cleanup sweep complete! Zero dangling orders remain.")

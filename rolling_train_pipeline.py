@@ -140,6 +140,7 @@ class RollingBatchPipeline:
         tp_atr_mult: float = 3.0,
         max_horizon_bars: int = 24,
         synthetic: bool = False,
+        model_version: str = "v1",
         progress_callback=None
     ) -> Dict[str, Any]:
         """
@@ -164,16 +165,26 @@ class RollingBatchPipeline:
         num_batches = int(np.ceil(num_symbols / batch_size))
         batches = [symbols[i * batch_size : (i + 1) * batch_size] for i in range(num_batches)]
 
+        clean_ver = model_version.lower().strip()
+        model_name = "lightgbm_crypto_model_v2" if clean_ver in ("v2", "2") else "lightgbm_crypto_model_v1"
+
         log_audit(
             f"Initiating accelerated rolling-batch training for {num_symbols} symbols in {num_batches} batches "
-            f"(Batch Size: {batch_size}, Storage Cap: {self.max_storage_gb} GB)"
+            f"(Target Model: {model_name}, Batch Size: {batch_size}, Storage Cap: {self.max_storage_gb} GB)"
         )
 
-        model_path = self.models_dir / "lightgbm_crypto_model.txt"
-        meta_path = self.models_dir / "lightgbm_crypto_model_metadata.json"
+        model_path = self.models_dir / f"{model_name}.txt"
+        meta_path = self.models_dir / f"{model_name}_metadata.json"
 
         booster = None
         feature_cols: List[str] = []
+
+        if not model_path.exists() and clean_ver in ("v1", "1"):
+            legacy_model = self.models_dir / "lightgbm_crypto_model.txt"
+            legacy_meta = self.models_dir / "lightgbm_crypto_model_metadata.json"
+            if legacy_model.exists() and legacy_meta.exists():
+                model_path = legacy_model
+                meta_path = legacy_meta
 
         if model_path.exists() and meta_path.exists():
             try:
@@ -181,7 +192,7 @@ class RollingBatchPipeline:
                 with open(meta_path, "r") as f:
                     meta = json.load(f)
                     feature_cols = meta.get("feature_cols", [])
-                log_audit(f"Loaded existing model booster with {booster.current_iteration()} iterations.")
+                log_audit(f"Loaded existing model booster ({model_name}) with {booster.current_iteration()} iterations.")
             except Exception as e:
                 logger.warning(f"Could not load existing booster, starting fresh: {e}")
                 booster = None

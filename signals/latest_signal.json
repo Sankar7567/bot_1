@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-10-18T07:02:18.439922+00:00",
-  "symbol": "GOOGL/USDT:USDT",
+  "timestamp": "2026-10-18T09:41:25.090236+00:00",
+  "symbol": "GALA/USDT:USDT",
   "direction": "SHORT",
-  "confidence": 0.8507,
-  "entry_price": 339.33,
-  "stop_loss": 339.4527,
-  "take_profit": 338.962,
+  "confidence": 0.8355,
+  "entry_price": 0.0019,
+  "stop_loss": 0.002,
+  "take_profit": 0.0019,
   "risk_pct": 5.0,
-  "dollar_risk": 8.1356,
+  "dollar_risk": 668.4383,
   "leverage": 20,
-  "suggested_position_size": 9.59,
+  "suggested_position_size": 103039705.0,
   "mode": "PAPER",
   "status": "SIGNAL_GENERATED"
 }

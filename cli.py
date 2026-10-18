@@ -51,14 +51,15 @@ def rolling_train(
     rounds_per_batch: int = typer.Option(40, "--rounds", "-r", help="LightGBM boosting rounds per batch"),
     max_storage_gb: float = typer.Option(18.0, "--max-storage-gb", help="Strict disk ceiling threshold in GB"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols list"),
-    synthetic: bool = typer.Option(False, "--synthetic", help="Use realistic synthetic data for fast local verification")
+    synthetic: bool = typer.Option(False, "--synthetic", help="Use realistic synthetic data for fast local verification"),
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to train: 'v1' (baseline) or 'v2' (trend-following)")
 ):
     """
     Ingests, engineers features for, and trains LightGBM on batches of symbols,
     automatically purging raw Parquet files after each batch to maintain < 20GB disk limit.
     """
     console.print(f"[bold cyan]Initiating Rolling-Batch Multi-Symbol Training...[/bold cyan]")
-    console.print(f"Batch Size: [yellow]{batch_size}[/yellow] | Max Storage Cap: [green]{max_storage_gb:.1f} GB[/green]")
+    console.print(f"Batch Size: [yellow]{batch_size}[/yellow] | Max Storage Cap: [green]{max_storage_gb:.1f} GB[/green] | Model Version: [magenta]{model_version}[/magenta]")
 
     sym_list = None
     if symbols:
@@ -70,13 +71,15 @@ def rolling_train(
         batch_size=batch_size,
         months=months,
         rounds_per_batch=rounds_per_batch,
-        synthetic=synthetic
+        synthetic=synthetic,
+        model_version=model_version
     )
 
     console.print(f"[bold green]Rolling-batch training completed successfully![/bold green]")
     console.print(f"Total Batches Processed: {res['total_batches']}")
     console.print(f"Final Model Iterations: {res['final_iterations']}")
     console.print(f"Final Storage Usage: [yellow]{res['final_storage_gb']:.3f} GB[/yellow] (Safely under 20GB limit)")
+    console.print(f"Model saved as version: [magenta]{model_version}[/magenta]")
 
 
 @app.command()
@@ -85,7 +88,8 @@ def optimize_risk(
     timeframe: str = typer.Option("5m", "--timeframe", "-tf", help="Base timeframe"),
     risks: str = typer.Option("0.02,0.03,0.05", "--risks", "-r", help="Comma-separated risk fractions to test"),
     capital: float = typer.Option(100.0, "--capital", "-c", help="Starting compounding capital in USD"),
-    threshold: float = typer.Option(0.35, "--threshold", help="ML probability threshold")
+    threshold: float = typer.Option(0.35, "--threshold", help="ML probability threshold"),
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to evaluate: 'v1' or 'v2'")
 ):
     """
     Backtests and compares 2%, 3%, and 5% account risk per trade compounding from $100 starting balance.
@@ -100,10 +104,10 @@ def optimize_risk(
         fe.save_feature_dataset(df, timeframe, symbol)
 
     risk_list = [float(r.strip()) for r in risks.split(",") if r.strip()]
-    console.print(f"[bold cyan]Running Compounding Risk Optimization on {symbol} (Initial Capital: ${capital:.2f})...[/bold cyan]")
+    console.print(f"[bold cyan]Running Compounding Risk Optimization on {symbol} (Initial Capital: ${capital:.2f}) [Model: {model_version}]...[/bold cyan]")
 
-    trainer = ModelTrainer()
-    trainer.load_model()
+    trainer = ModelTrainer(model_version=model_version)
+    trainer.load_model(version=model_version)
 
     opt_results = compare_risk_profiles(
         df,
@@ -195,7 +199,8 @@ def live_scan(
     threshold: float = typer.Option(0.35, "--threshold", help="Model confidence threshold"),
     risk: float = typer.Option(0.03, "--risk", "-r", help="Risk fraction per trade (default 3%)"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated active symbols to poll"),
-    daemon: bool = typer.Option(False, "--daemon", "-d", help="Run in continuous polling loop")
+    daemon: bool = typer.Option(False, "--daemon", "-d", help="Run in continuous polling loop"),
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' or 'v2'")
 ):
     """
     Polls real-time Binance Futures candles via CCXT, runs LightGBM inference,
@@ -208,7 +213,8 @@ def live_scan(
     generator = LiveSignalGenerator(
         symbols=sym_list,
         confidence_threshold=threshold,
-        risk_pct=risk
+        risk_pct=risk,
+        model_version=model_version
     )
 
     if daemon:
@@ -389,7 +395,8 @@ def backtest(
     max_horizon: int = typer.Option(24, "--max-horizon", help="Max holding duration in bars"),
     taker_fee: float = typer.Option(0.0005, "--taker-fee", help="Taker fee (0.05% = 0.0005)"),
     maker_fee: float = typer.Option(0.0002, "--maker-fee", help="Maker fee (0.02% = 0.0002)"),
-    funding_rate_8h: float = typer.Option(0.0001, "--funding-rate", help="8h Funding rate (0.01% = 0.0001)")
+    funding_rate_8h: float = typer.Option(0.0001, "--funding-rate", help="8h Funding rate (0.01% = 0.0001)"),
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' or 'v2'")
 ):
     """
     Runs strict one-trade-at-a-time backtest with dynamic ATR risk sizing and compounding equity.
@@ -417,8 +424,8 @@ def backtest(
         if not df.empty:
             fe.save_feature_dataset(df, timeframe, symbol)
 
-    trainer = ModelTrainer()
-    trainer.load_model()
+    trainer = ModelTrainer(model_version=model_version)
+    trainer.load_model(version=model_version)
 
     engine = BacktestEngine(
         initial_capital=initial_capital,
@@ -493,7 +500,8 @@ def execute(
     poll_interval: int = typer.Option(15, "--poll-interval", "-i", help="Scanning polling interval in seconds (default 15s)"),
     monitor_interval: int = typer.Option(30, "--monitor-interval", help="Active trade monitoring interval in seconds (default 30s)"),
     daemon: bool = typer.Option(False, "--daemon", "-d", help="Run continuously in bulletproof 24/7 background daemon loop"),
-    iterations: Optional[int] = typer.Option(None, "--iterations", help="Maximum iterations to run if in daemon mode")
+    iterations: Optional[int] = typer.Option(None, "--iterations", help="Maximum iterations to run if in daemon mode"),
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (baseline) or 'v2' (trend-following)")
 ):
     """
     Executes trades in PAPER or LIVE mode on Binance Futures.
@@ -504,7 +512,7 @@ def execute(
     if symbols:
         sym_list = [s.strip() for s in symbols.split(",") if s.strip()]
 
-    console.print(f"[bold green]Initializing Dual-Mode Execution Engine ({mode.upper()} MODE)...[/bold green]")
+    console.print(f"[bold green]Initializing Dual-Mode Execution Engine ({mode.upper()} MODE) [Model: {model_version}]...[/bold green]")
     try:
         engine = DualModeExecutionEngine(
             mode=mode,
@@ -513,7 +521,8 @@ def execute(
             risk_pct=risk,
             confidence_threshold=threshold,
             base_timeframe=timeframe,
-            symbols=sym_list
+            symbols=sym_list,
+            model_version=model_version
         )
     except Exception as e:
         console.print(f"[bold red]Initialization failed: {e}[/bold red]")
@@ -677,7 +686,8 @@ def status():
     console.print(table)
 
 
-@app.command()
+@app.command(name="test-cleanup")
+@app.command(name="test-orphan-cleanup")
 def test_cleanup(
     symbol: str = typer.Option("BTC/USDT:USDT", "--symbol", "-s", help="Symbol to test bracket order cleanup on"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="Binance API Key (or loaded from .env)"),

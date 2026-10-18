@@ -61,6 +61,9 @@ class TestCryptoMLPlatform(unittest.TestCase):
         test_batch = Path("test_batch_data")
         if test_batch.exists():
             shutil.rmtree(test_batch, ignore_errors=True)
+        test_models_v2 = Path("test_models_v2")
+        if test_models_v2.exists():
+            shutil.rmtree(test_models_v2, ignore_errors=True)
 
     def test_01_data_pipeline_storage_and_partitioning(self):
         """Verify storage calculations, Parquet compression, and safe symbol conversions."""
@@ -928,6 +931,141 @@ class TestCryptoMLPlatform(unittest.TestCase):
         self.assertTrue(res["passed"], "Mock cleanup test protocol must pass.")
         self.assertEqual(len(res["error"] or ""), 0)
         adapter.cancel_all_orders_for_symbol.assert_called()
+
+
+    def test_28_multi_model_versioned_load(self):
+        """
+        Verify ModelTrainer.resolve_model_name correctly resolves v1 and v2 paths,
+        and that the model_version parameter is stored and forwarded.
+        """
+        trainer_v1 = ModelTrainer(model_version="v1")
+        trainer_v2 = ModelTrainer(model_version="v2")
+
+        # v1 resolves to either the v1 file or the legacy fallback
+        resolved_v1 = trainer_v1.resolve_model_name(version="v1")
+        self.assertIn(resolved_v1, ("lightgbm_crypto_model_v1", "lightgbm_crypto_model"),
+                      "v1 must resolve to versioned or legacy filename")
+
+        # v2 must always resolve to the v2 specific filename
+        resolved_v2 = trainer_v2.resolve_model_name(version="v2")
+        self.assertEqual(resolved_v2, "lightgbm_crypto_model_v2",
+                         "v2 must resolve to lightgbm_crypto_model_v2")
+
+        # Explicit model_name shorthand overrides
+        self.assertIn(trainer_v1.resolve_model_name(model_name="v1"),
+                      ("lightgbm_crypto_model_v1", "lightgbm_crypto_model"))
+        self.assertEqual(trainer_v1.resolve_model_name(model_name="v2"),
+                         "lightgbm_crypto_model_v2")
+
+        # Ensure model_version attribute is stored correctly
+        self.assertEqual(trainer_v1.model_version, "v1")
+        self.assertEqual(trainer_v2.model_version, "v2")
+
+    def test_29_adx_and_trend_features_present(self):
+        """
+        Verify that the new trend-following features (ADX, EMA slopes, MACD continuation)
+        introduced in features.py are present in the computed feature matrix.
+        """
+        fe = FeatureEngineer(self.pipeline)
+        df = fe.build_aligned_multi_timeframe_features("BTC/USDT:USDT", base_timeframe="5m")
+        self.assertFalse(df.empty, "Feature matrix must not be empty for BTC/USDT:USDT")
+
+        # ADX family
+        for col in ("adx_14", "plus_di_14", "minus_di_14", "adx_trend_strong", "di_spread"):
+            self.assertIn(col, df.columns, f"Feature '{col}' must be present in computed features")
+
+        # MACD continuation & slope
+        for col in ("macd_hist_slope", "macd_bullish_continuation", "macd_bearish_continuation"):
+            self.assertIn(col, df.columns, f"Feature '{col}' must be present in computed features")
+
+        # EMA slopes
+        for col in ("ema_20_slope", "ema_50_slope", "ema_200_slope"):
+            self.assertIn(col, df.columns, f"Feature '{col}' must be present in computed features")
+
+        # EMA alignment & trend flags
+        for col in ("ema_alignment_bullish", "ema_alignment_bearish", "trend_bearish"):
+            self.assertIn(col, df.columns, f"Feature '{col}' must be present in computed features")
+
+    def test_30_symmetric_directional_labeling_balanced(self):
+        """
+        Verify that symmetric_directional=True produces balanced labels for both LONG (1)
+        and SHORT (-1) breakout momentum (3:1 reward-to-risk in each direction),
+        eliminating the massive 3:1 distortion of legacy labeling where any 1-ATR SL hit was labeled -1.
+        """
+        fe = FeatureEngineer(self.pipeline)
+        df = fe.build_aligned_multi_timeframe_features("BTC/USDT:USDT", base_timeframe="5m")
+        if df.empty:
+            self.skipTest("No features available — skipping symmetric labeling balance test")
+
+        labeled_sym = apply_triple_barrier_labeling(df.copy(), symmetric_directional=True)
+
+        sym_long = int((labeled_sym["label"] == 1).sum())
+        sym_short = int((labeled_sym["label"] == -1).sum())
+
+        # Symmetric mode must produce valid samples in both directions
+        self.assertGreater(sym_short, 0, "Symmetric labeling must produce SHORT (-1) breakout labels")
+        self.assertGreater(sym_long, 0, "Symmetric labeling must produce LONG (+1) breakout labels")
+
+        # The directional balance between Long and Short must be well-distributed (ratio >= 0.5)
+        # eliminating the massive 3:1 label distortion of legacy 1-ATR SL triggers
+        balance_ratio = min(sym_long, sym_short) / max(sym_long, sym_short)
+        self.assertGreaterEqual(
+            balance_ratio, 0.5,
+            f"Symmetric labeling balance ratio ({balance_ratio:.2f}) must be >= 0.5 (near 1:1 balance)"
+        )
+
+    def test_31_rolling_train_with_model_version_v2(self):
+        """
+        Verify that rolling training with model_version='v2' produces a
+        'lightgbm_crypto_model_v2.txt' artifact in models/ directory,
+        and does NOT overwrite the v1 model file.
+        """
+        test_models_dir = Path("test_models_v2")
+        if test_models_dir.exists():
+            shutil.rmtree(test_models_dir, ignore_errors=True)
+        test_models_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build features first (reuse synthetic data from setUpClass)
+        fe = FeatureEngineer(self.pipeline)
+        df = fe.build_aligned_multi_timeframe_features("BTC/USDT:USDT", base_timeframe="5m")
+        if not df.empty:
+            fe.save_feature_dataset(df, "5m", "BTC/USDT:USDT")
+
+        # Create a trainer pointing at test directory, train & save as v2
+        trainer = ModelTrainer(models_dir=str(test_models_dir), model_version="v2")
+        full_df = trainer.load_aggregated_dataset(
+            symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"],
+            timeframe="5m",
+            symmetric_directional=True
+        )
+
+        if full_df.empty or len(full_df) < 30:
+            self.skipTest("Insufficient labeled data for v2 training test — skipping")
+
+        trainer.train_walk_forward_cv(
+            full_df,
+            n_splits=2,
+            params={"num_leaves": 16, "n_estimators": 20, "learning_rate": 0.05},
+            save_as="lightgbm_crypto_model",
+            version="v2"
+        )
+
+        v2_model_path = test_models_dir / "lightgbm_crypto_model_v2.txt"
+        self.assertTrue(v2_model_path.exists(),
+                        f"v2 model file must exist at {v2_model_path} after training")
+
+        # v1 file must NOT have been created in test dir (no cross-contamination)
+        v1_model_path = test_models_dir / "lightgbm_crypto_model_v1.txt"
+        legacy_model_path = test_models_dir / "lightgbm_crypto_model.txt"
+        self.assertFalse(
+            v1_model_path.exists() or legacy_model_path.exists(),
+            "Training with version='v2' must NOT write any v1/legacy model files"
+        )
+
+        # Cleanup
+        import shutil
+        shutil.rmtree(test_models_dir, ignore_errors=True)
+
 
 
 if __name__ == "__main__":

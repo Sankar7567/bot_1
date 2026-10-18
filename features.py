@@ -94,6 +94,50 @@ def calculate_rolling_vwap(df: pd.DataFrame, window: int = 24) -> pd.Series:
     return vwap.fillna(df["close"])
 
 
+def calculate_adx(
+    df: pd.DataFrame,
+    period: int = 14
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """
+    Computes Wilder's Average Directional Index (ADX), +DI, and -DI.
+    Returns: (adx, plus_di, minus_di, dx)
+    """
+    high = df["high"]
+    low = df["low"]
+    prev_close = df["close"].shift(1)
+    prev_high = high.shift(1)
+    prev_low = low.shift(1)
+
+    # True Range
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # Directional Movement
+    up_move = high - prev_high
+    down_move = prev_low - low
+
+    plus_dm = pd.Series(np.where((up_move > down_move) & (up_move > 0), up_move, 0.0), index=df.index)
+    minus_dm = pd.Series(np.where((down_move > up_move) & (down_move > 0), down_move, 0.0), index=df.index)
+
+    # Wilder's smoothing using EWM with alpha=1/period
+    alpha = 1.0 / period
+    tr_smooth = tr.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+    plus_dm_smooth = plus_dm.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+    minus_dm_smooth = minus_dm.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+
+    plus_di = 100.0 * (plus_dm_smooth / (tr_smooth + 1e-12))
+    minus_di = 100.0 * (minus_dm_smooth / (tr_smooth + 1e-12))
+
+    di_diff = (plus_di - minus_di).abs()
+    di_sum = plus_di + minus_di
+    dx = 100.0 * (di_diff / (di_sum + 1e-12))
+    adx = dx.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+
+    return adx.fillna(20.0), plus_di.fillna(25.0), minus_di.fillna(25.0), dx.fillna(20.0)
+
+
 Tuple_MACD = tuple[pd.Series, pd.Series, pd.Series]
 Tuple_BB = tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]
 
@@ -128,6 +172,16 @@ class FeatureEngineer:
         feat[f"{prefix}macd_signal"] = macd_sig / (close + 1e-12)
         feat[f"{prefix}macd_hist"] = macd_hist / (close + 1e-12)
         
+        # MACD Histogram Momentum Continuation & Acceleration
+        macd_hist_slope = (macd_hist - macd_hist.shift(2)) / (close + 1e-12)
+        feat[f"{prefix}macd_hist_slope"] = macd_hist_slope.fillna(0.0)
+        feat[f"{prefix}macd_bullish_continuation"] = (
+            (macd_hist > 0) & (macd_hist_slope > 0)
+        ).astype(np.float32)
+        feat[f"{prefix}macd_bearish_continuation"] = (
+            (macd_hist < 0) & (macd_hist_slope < 0)
+        ).astype(np.float32)
+        
         # Rate of Change (ROC)
         for p in [5, 10, 20]:
             feat[f"{prefix}roc_{p}"] = ((close - close.shift(p)) / (close.shift(p) + 1e-12)) * 100.0
@@ -155,14 +209,42 @@ class FeatureEngineer:
         feat[f"{prefix}bb_width"] = bb_width
         feat[f"{prefix}bb_pct_b"] = pct_b
 
+        # ADX & Directional Movement
+        adx, plus_di, minus_di, dx = calculate_adx(df, 14)
+        feat[f"{prefix}adx_14"] = adx
+        feat[f"{prefix}plus_di_14"] = plus_di
+        feat[f"{prefix}minus_di_14"] = minus_di
+        feat[f"{prefix}adx_trend_strong"] = (adx > 25.0).astype(np.float32)
+        feat[f"{prefix}di_spread"] = (plus_di - minus_di) / 100.0
+
         ema_20 = close.ewm(span=20, adjust=False).mean()
         ema_50 = close.ewm(span=50, adjust=False).mean()
         ema_200 = close.ewm(span=200, adjust=False).mean()
 
         feat[f"{prefix}ema_20_50_diff"] = (ema_20 - ema_50) / (ema_50 + 1e-12)
         feat[f"{prefix}ema_50_200_diff"] = (ema_50 - ema_200) / (ema_200 + 1e-12)
+
+        # Fast/Slow EMA Slopes
+        ema_20_slope = (ema_20 - ema_20.shift(3)) / (ema_20.shift(3) + 1e-12)
+        ema_50_slope = (ema_50 - ema_50.shift(3)) / (ema_50.shift(3) + 1e-12)
+        ema_200_slope = (ema_200 - ema_200.shift(5)) / (ema_200.shift(5) + 1e-12)
+
+        feat[f"{prefix}ema_20_slope"] = ema_20_slope.fillna(0.0)
+        feat[f"{prefix}ema_50_slope"] = ema_50_slope.fillna(0.0)
+        feat[f"{prefix}ema_200_slope"] = ema_200_slope.fillna(0.0)
+
+        feat[f"{prefix}ema_alignment_bullish"] = (
+            (ema_20_slope > 0) & (ema_50_slope > 0) & (ema_20 > ema_50)
+        ).astype(np.float32)
+        feat[f"{prefix}ema_alignment_bearish"] = (
+            (ema_20_slope < 0) & (ema_50_slope < 0) & (ema_20 < ema_50)
+        ).astype(np.float32)
+
         feat[f"{prefix}trend_bullish"] = (
             (close > ema_20) & (ema_20 > ema_50) & (ema_50 > ema_200)
+        ).astype(np.float32)
+        feat[f"{prefix}trend_bearish"] = (
+            (close < ema_20) & (ema_20 < ema_50) & (ema_50 < ema_200)
         ).astype(np.float32)
 
         return feat
