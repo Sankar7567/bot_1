@@ -10,7 +10,7 @@ Calculations:
 """
 
 import logging
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 
 import numpy as np
@@ -228,14 +228,14 @@ class FeatureEngineer:
         merged = merged.ffill().dropna().reset_index(drop=True)
         return merged
 
-    def save_feature_dataset(self, df: pd.DataFrame, timeframe: str, symbol: str) -> None:
+    def save_feature_dataset(self, df: pd.DataFrame, timeframe: str, symbol: str, compression: str = "snappy") -> None:
         """Saves engineered features to data/features/{timeframe}/{safe_symbol}.parquet."""
         if df.empty:
             return
         safe_sym = sanitize_symbol_for_filename(symbol)
         out_path = self.pipeline.features_dir / timeframe / f"{safe_sym}.parquet"
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(out_path, engine="pyarrow", compression="zstd", index=False)
+        df.to_parquet(out_path, engine="pyarrow", compression=compression, index=False)
 
     def load_feature_dataset(self, timeframe: str, symbol: str) -> pd.DataFrame:
         """Loads engineered features from data/features/{timeframe}/{safe_symbol}.parquet."""
@@ -243,21 +243,32 @@ class FeatureEngineer:
         out_path = self.pipeline.features_dir / timeframe / f"{safe_sym}.parquet"
         if not out_path.exists():
             return pd.DataFrame()
-        return pd.read_parquet(out_path)
+        return pd.read_parquet(out_path, engine="pyarrow")
 
     def batch_build_features(
         self,
         symbols: List[str],
         base_timeframe: str = "5m",
         htf_timeframes: Optional[List[str]] = None,
+        max_workers: Optional[int] = None,
         progress_callback=None
     ) -> int:
-        """Builds and caches features for multiple symbols."""
+        """
+        Builds and caches multi-timeframe features concurrently across multiple symbols
+        utilizing all Ryzen 5 CPU cores for parallelized speed.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         if htf_timeframes is None:
             htf_timeframes = ["15m", "1h"]
 
+        if max_workers is None:
+            max_workers = min(12, max(2, len(symbols)))
+
         count = 0
-        for i, sym in enumerate(symbols):
+        completed = 0
+
+        def _worker(sym: str) -> Tuple[str, bool]:
             try:
                 feat_df = self.build_aligned_multi_timeframe_features(
                     symbol=sym,
@@ -265,13 +276,21 @@ class FeatureEngineer:
                     htf_timeframes=htf_timeframes
                 )
                 if not feat_df.empty:
-                    self.save_feature_dataset(feat_df, base_timeframe, sym)
-                    count += 1
+                    self.save_feature_dataset(feat_df, base_timeframe, sym, compression="snappy")
+                    return sym, True
             except Exception as e:
                 logger.error(f"Error building features for {sym}: {e}")
+            return sym, False
 
-            if progress_callback:
-                progress_callback(i + 1, len(symbols), sym)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_sym = {executor.submit(_worker, sym): sym for sym in symbols}
+            for future in as_completed(future_to_sym):
+                sym, success = future.result()
+                completed += 1
+                if success:
+                    count += 1
+                if progress_callback:
+                    progress_callback(completed, len(symbols), sym)
 
-        logger.info(f"Built and saved features for {count}/{len(symbols)} symbols.")
+        logger.info(f"Built and saved features for {count}/{len(symbols)} symbols in parallel.")
         return count

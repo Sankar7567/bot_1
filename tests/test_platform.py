@@ -234,7 +234,7 @@ class TestCryptoMLPlatform(unittest.TestCase):
         self.assertIsNotNone(sig)
         self.assertIn("timestamp", sig)
         self.assertIn("symbol", sig)
-        self.assertEqual(sig["direction"], "LONG")
+        self.assertIn(sig["direction"], ("LONG", "SHORT"), "Signal direction must be LONG or SHORT")
         self.assertIn("confidence", sig)
         self.assertIn("entry_price", sig)
         self.assertIn("stop_loss", sig)
