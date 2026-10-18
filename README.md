@@ -115,25 +115,21 @@ python cli.py execute --mode live  --threshold 0.35 --risk 0.05
 
 Displays a **Rich progress bar** during universe scanning and a **Candidate Leaderboard Table** ranking all evaluated setups by ML confidence, with status labels (`SELECTED_AND_EXECUTED`, `SKIPPED_MIN_NOTIONAL`, `VALID_SETUP_QUEUE`, `BELOW_THRESHOLD`).
 
-#### 24/7 Daemon Mode (Recommended for Live Trading)
+#### 24/7 Autonomous Daemon Mode (Recommended for Live Trading)
 ```bash
-python cli.py execute --mode live --daemon --poll-interval 15 --threshold 0.35 --risk 0.05
+python cli.py execute --mode live --daemon --poll-interval 15 --monitor-interval 30 --threshold 0.35 --risk 0.05
 ```
 
-The daemon runs **continuously** without exiting. It operates in two alternating phases:
+The daemon runs **infinitely without crashing**, cycling seamlessly through:
+`Universal Scanning -> Global Best-Trade Selection -> Order Execution -> 30-Second Active Trade Monitoring -> Closure Sweep & Cleanup -> Infinite Re-Scanning`.
 
-| Phase | Trigger | Action |
-|---|---|---|
-| **SCANNING** | No active trade | Full ML universe scan across 500+ symbols; executes highest-conviction valid trade |
-| **MONITORING** | Active trade detected | Polls TP/SL every `--poll-interval` seconds; checks **both** local price arithmetic and live Binance `fetch_positions()` |
+| Phase | Cadence | Trigger | Autonomous Action |
+|---|---|---|---|
+| **Phase 1: Discovery & Execution** | Every 15s | No active trade | Scans 500+ symbols, evaluates ML confidence, skips sub-minimum trades (`SKIPPED_MIN_NOTIONAL`), executes best trade with isolated margin and 1:3 RR bracket orders |
+| **Phase 2: Active Trade Monitoring** | Every 30s | Active trade open | Dedicated sub-loop sleeps 30 seconds, polls ticker price AND Binance `fetch_positions()` to verify live bracket fills |
+| **Phase 3: Completion, Cleanup & Reset** | Instant | Trade closed | Executes Closure Sweep (`cancel_all_orders`), marks state `CLOSED`, logs PnL to audit trail, and **immediately returns to Phase 1** to scan 24/7 |
 
-Once a trade closes (TP/SL hit on price **or** confirmed gone from exchange), the daemon:
-1. Cancels all remaining bracket orders (Closure Sweep)
-2. Updates `signals/active_trade_state.json` → `CLOSED`
-3. Logs the closure to `logs/platform_audit.log`
-4. **Immediately** resumes universe scanning for the next trade
-
-Stop with **Ctrl+C** — the daemon shuts down gracefully and logs the event.
+Stop anytime with **Ctrl+C** — the daemon intercepts the interrupt, shuts down gracefully, and logs the exit.
 
 ### 7. System Status & Disk Usage Meter
 ```bash
@@ -164,7 +160,7 @@ When a high-conviction trade setup ($P(\text{TP}) \ge \text{threshold}$) is dete
 }
 ```
 
-All events (orders, closures, skips, fallbacks) are appended as JSON Lines to `logs/platform_audit.log`.
+All events (orders, closures, skips, exceptions, fallbacks) are appended as JSON Lines to `logs/platform_audit.log`.
 
 ---
 
@@ -187,18 +183,26 @@ Open [http://localhost:8501](http://localhost:8501).
 
 ## 5. Key Design Decisions
 
+### Bulletproof Infinite Loop & Error Resilience
+- The outer loop is an unbreakable `while True:` wrapped in comprehensive `try...except Exception as e:` blocks.
+- If any network timeout, CCXT error, rate limit, or unexpected exception occurs:
+  - It catches the error, logs full stack trace to `logs/platform_audit.log`, sleeps 15 seconds, and **continues the loop**.
+  - Exceptions never crash the daemon.
+- Automatic retry on network dropouts via `retry_ccxt_call` (up to 3 attempts with exponential backoff).
+- Binance code `-4168` ("Unable to adjust to isolated-margin mode under the Multi-Assets mode") is handled gracefully with an informational warning, allowing trading to proceed with account default margin mode.
+
 ### Sub-Minimum Trade Skipping
 When 5% equity risk sizing produces a position below Binance's `minNotional` or `minQty` for a symbol:
-- **No crash or error** — the candidate is silently skipped.
+- **No crash or error** — the candidate is skipped.
 - Logs: `[SKIPPED_MIN_NOTIONAL] Symbol XYZ position size $A below exchange minNotional $B. Evaluating next top setup.`
 - The engine evaluates the next highest-ML-confidence candidate in the ranked queue until a valid trade is found.
 
-### Live Exchange Reconciliation
+### Two-Layer Live Exchange Reconciliation & 30-Second Cadence
 In LIVE mode, `check_and_process_exit()` uses **two independent layers**:
 1. **Local price arithmetic** — compares current ticker price against stored TP/SL levels.
 2. **Exchange reconciliation** — calls `fetch_positions([symbol])` to detect fills that Binance executed on bracket orders even before the ticker price crosses the barrier locally.
 
-This ensures the active-trade lock is released promptly and no position stays "stuck" in the system after the exchange has already closed it.
+The monitoring sub-loop checks this every 30 seconds (`--monitor-interval 30`), ensuring prompt bracket order cleanup and state reset.
 
 ### Binance `fetchOpenOrders` Warning Suppression
 `LiveExchangeAdapter` sets `exchange.options["fetchOpenOrders"]["warnWithoutSymbol"] = False` on initialization. This suppresses the CCXT advisory emitted when calling `fetch_open_orders()` without a symbol — we call it intentionally during the global orphan sweep.
@@ -211,7 +215,7 @@ This ensures the active-trade lock is released promptly and no position stays "s
 python -m unittest tests/test_platform.py -v
 ```
 
-All **18 tests** pass and validate:
+All **21 tests** pass and validate:
 
 | # | Test | What It Verifies |
 |---|---|---|
@@ -233,3 +237,6 @@ All **18 tests** pass and validate:
 | 16 | ML Probability Ranking | Strict descending confidence sort + progress callback |
 | 17 | Daemon Loop | SCANNING/MONITORING phase transitions + closure resume |
 | 18 | Warning Suppression | `fetchOpenOrders.warnWithoutSymbol = False` set on adapter |
+| 19 | Error Resilience | CCXT network errors caught, logged with traceback, loop continues |
+| 20 | Code -4168 Handling | Multi-Assets isolated margin error handled gracefully without raising |
+| 21 | 30s Monitoring & Sweep | Dedicated 30s monitoring sub-loop, closure sweep & immediate reset |

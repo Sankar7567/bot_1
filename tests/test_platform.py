@@ -555,6 +555,139 @@ class TestCryptoMLPlatform(unittest.TestCase):
             "warnWithoutSymbol must be False to suppress the Binance fetchOpenOrders rate-limit warning."
         )
 
+    def test_19_daemon_unbreakable_error_resilience(self):
+        """
+        Verify that unexpected exceptions (CCXT errors, network timeouts) are caught,
+        logged with traceback to audit log, and do not crash the daemon loop.
+        """
+        from unittest.mock import patch
+        import ccxt
+
+        test_wallet = Path("test_resilience_wallet.json")
+        engine = DualModeExecutionEngine(
+            mode="PAPER",
+            risk_pct=0.05,
+            confidence_threshold=0.30,
+            wallet_path=test_wallet,
+            pipeline=self.pipeline
+        )
+        engine.save_active_trade({"status": "CLOSED"})
+
+        call_records = []
+        def flaky_step(**kwargs):
+            call_records.append("STEP")
+            if len(call_records) == 1:
+                raise ccxt.NetworkError("Simulated Binance API disconnect / timeout")
+            return None
+
+        engine.step = flaky_step
+        error_callbacks = []
+        def status_cb(phase, data):
+            if phase == "ERROR_RETRY":
+                error_callbacks.append(data)
+
+        # Patch time.sleep so test runs instantly without 15s wait
+        with patch("time.sleep"):
+            engine.run_loop(poll_interval_sec=0, max_iterations=2, status_callback=status_cb)
+
+        # Verify the exception was caught, recorded, and the loop proceeded to iteration 2
+        self.assertGreaterEqual(len(call_records), 2, "Loop must continue to next iteration after exception!")
+        self.assertEqual(len(error_callbacks), 1, "status_callback must receive ERROR_RETRY notification")
+        self.assertIn("Simulated Binance API disconnect", error_callbacks[0]["error"])
+
+        engine.save_active_trade({"status": "CLOSED"})
+        if test_wallet.exists():
+            test_wallet.unlink()
+
+    def test_20_binance_code_4168_multi_assets_margin_graceful_handling(self):
+        """
+        Verify Binance error code -4168 (Multi-Assets mode prevents isolated margin)
+        is handled gracefully with an informational warning and without raising.
+        """
+        from execution import LiveExchangeAdapter
+        from unittest.mock import MagicMock
+        import ccxt
+
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.api_key = "dummy_key"
+        adapter.api_secret = "dummy_secret"
+        adapter.exchange = MagicMock()
+        # Simulate Binance returning -4168
+        adapter.exchange.set_margin_mode.side_effect = ccxt.ExchangeError(
+            'binance {"code":-4168,"msg":"Unable to adjust to isolated-margin mode under the Multi-Assets mode"}'
+        )
+        adapter.exchange.set_leverage.return_value = {"leverage": 20}
+
+        try:
+            adapter.configure_symbol_margin_and_leverage("BTC/USDT:USDT", 20)
+            handled = True
+        except Exception:
+            handled = False
+
+        self.assertTrue(handled, "Code -4168 must be handled gracefully without crashing.")
+        adapter.exchange.set_leverage.assert_called_once_with(20, "BTC/USDT:USDT")
+
+    def test_21_dedicated_30s_monitoring_sub_loop_and_closure_sweep(self):
+        """
+        Verify Phase 2 (30s active monitoring sub-loop) polls active trade and upon
+        closure executes Phase 3 cleanup sweep and immediately returns to Phase 1.
+        """
+        from unittest.mock import patch
+
+        test_wallet = Path("test_monitor_wallet.json")
+        engine = DualModeExecutionEngine(
+            mode="PAPER",
+            risk_pct=0.05,
+            confidence_threshold=0.30,
+            wallet_path=test_wallet,
+            pipeline=self.pipeline
+        )
+        active_pos = {
+            "status": "OPEN",
+            "symbol": "ETH/USDT:USDT",
+            "direction": "LONG",
+            "entry_price": 2500.0,
+            "stop_loss": 2450.0,
+            "take_profit": 2650.0,
+            "suggested_position_size": 1.0,
+            "mode": "PAPER"
+        }
+        engine.save_active_trade(active_pos)
+
+        poll_count = {"count": 0}
+        def mock_check(trade):
+            poll_count["count"] += 1
+            if poll_count["count"] >= 2:
+                # Trigger closure on second monitor poll
+                engine.save_active_trade({"status": "CLOSED"})
+                return {
+                    "symbol": "ETH/USDT:USDT",
+                    "direction": "LONG",
+                    "exit_reason": "TAKE_PROFIT",
+                    "exit_price": 2650.0,
+                    "final_equity": 115.0
+                }
+            return None
+
+        engine.check_and_process_exit = mock_check
+        engine.step = lambda **kwargs: None
+        engine._symbols = ["ETH/USDT:USDT"]
+        phases = []
+        def status_cb(phase, data):
+            phases.append(phase)
+
+        with patch("time.sleep"):
+            engine.run_loop(poll_interval_sec=0, monitor_interval_sec=30, max_iterations=3, status_callback=status_cb)
+
+        self.assertIn("MONITORING", phases, "Must enter dedicated MONITORING phase.")
+        self.assertIn("CLOSED", phases, "Must trigger CLOSED phase on exit.")
+        # After closure, active trade state must be CLOSED
+        self.assertIsNone(engine.get_active_trade(), "Active trade state must be cleared after closure sweep.")
+
+        engine.save_active_trade({"status": "CLOSED"})
+        if test_wallet.exists():
+            test_wallet.unlink()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,41 +1,41 @@
 {
-  "equity": 168.1873,
+  "equity": 161.0847,
   "available_balance": 0.0,
-  "margin_used": 169.4669,
+  "margin_used": 162.7087,
   "realized_pnl": -5.6526,
-  "unrealized_pnl": -1.8639,
-  "total_fees_paid": 4.1928,
+  "unrealized_pnl": -0.0968,
+  "total_fees_paid": 11.2954,
   "active_position": {
-    "symbol": "ASML/USDT:USDT",
+    "symbol": "GOOGL/USDT:USDT",
     "direction": "SHORT",
-    "entry_price": 1645.31,
-    "size": 2.06,
-    "notional": 3389.3386,
+    "entry_price": 339.33,
+    "size": 9.59,
+    "notional": 3254.1746999999996,
     "leverage": 20,
-    "margin": 169.46693,
-    "stop_loss": 1646.2602244703824,
-    "take_profit": 1642.4593265888527,
-    "entry_time": "2026-10-18T06:36:40.172051+00:00",
+    "margin": 162.708735,
+    "stop_loss": 339.45266526019964,
+    "take_profit": 338.962004219401,
+    "entry_time": "2026-10-18T07:02:18.440310+00:00",
     "unrealized_pnl": 0.0
   },
   "pending_orders": [
     {
-      "order_id": "paper_sl_1792305400172",
-      "symbol": "ASML/USDT:USDT",
+      "order_id": "paper_sl_1792306938440",
+      "symbol": "GOOGL/USDT:USDT",
       "type": "STOP_MARKET",
       "side": "BUY",
-      "stop_price": 1646.2602244703824,
-      "amount": 2.06,
+      "stop_price": 339.45266526019964,
+      "amount": 9.59,
       "status": "OPEN",
       "reduce_only": true
     },
     {
-      "order_id": "paper_tp_1792305400172",
-      "symbol": "ASML/USDT:USDT",
+      "order_id": "paper_tp_1792306938440",
+      "symbol": "GOOGL/USDT:USDT",
       "type": "TAKE_PROFIT_MARKET",
       "side": "BUY",
-      "stop_price": 1642.4593265888527,
-      "amount": 2.06,
+      "stop_price": 338.962004219401,
+      "amount": 9.59,
       "status": "OPEN",
       "reduce_only": true
     }
@@ -58,5 +58,5 @@
       "final_equity": 170.8325
     }
   ],
-  "updated_at": "2026-10-18T06:36:40.172078+00:00"
+  "updated_at": "2026-10-18T07:02:18.440339+00:00"
 }

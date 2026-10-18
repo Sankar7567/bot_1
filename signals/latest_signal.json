@@ -1,15 +1,15 @@
 {
-  "timestamp": "2026-10-18T06:36:40.171675+00:00",
-  "symbol": "ASML/USDT:USDT",
+  "timestamp": "2026-10-18T07:02:18.439922+00:00",
+  "symbol": "GOOGL/USDT:USDT",
   "direction": "SHORT",
-  "confidence": 0.8435,
-  "entry_price": 1645.31,
-  "stop_loss": 1646.2602,
-  "take_profit": 1642.4593,
+  "confidence": 0.8507,
+  "entry_price": 339.33,
+  "stop_loss": 339.4527,
+  "take_profit": 338.962,
   "risk_pct": 5.0,
-  "dollar_risk": 8.4941,
+  "dollar_risk": 8.1356,
   "leverage": 20,
-  "suggested_position_size": 2.06,
+  "suggested_position_size": 9.59,
   "mode": "PAPER",
   "status": "SIGNAL_GENERATED"
 }

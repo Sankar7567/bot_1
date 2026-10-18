@@ -257,29 +257,58 @@ This ensures the active-trade lock is **always released promptly**, preventing t
 
 ---
 
-## 9. 24/7 Daemon Loop (`run_loop`)
+## 9. Bulletproof 24/7 Autonomous Daemon (`run_loop`)
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle
-    Idle --> Scanning : No active trade
-    Scanning --> Monitoring : Trade executed
-    Scanning --> Idle : No setup above threshold
-    Monitoring --> ClosureSweep : TP/SL hit (local) OR position gone (exchange)
-    Monitoring --> Monitoring : Position still open, sleep poll_interval
-    ClosureSweep --> Scanning : Immediately resume scan
-    Scanning --> [*] : KeyboardInterrupt or max_iterations
+    [*] --> Phase1_Discovery : Boot
+    Phase1_Discovery --> Phase1_Discovery : No setup met threshold / sub-minimum, sleep 15s
+    Phase1_Discovery --> Phase2_30sMonitoring : Best valid trade executed (1:3 RR)
+    
+    state Phase2_30sMonitoring {
+        [*] --> CheckExchange : Sleep 30s
+        CheckExchange --> CheckExchange : Position still open (contracts > 0)
+        CheckExchange --> ClosureDetected : TP/SL hit OR position confirmed gone
+    }
+    
+    Phase2_30sMonitoring --> Phase3_CleanupReset : Position closed
+    Phase3_CleanupReset --> Phase1_Discovery : Orphan sweep complete, state CLOSED, resume 24/7 scan
+    
+    Phase1_Discovery --> ErrorRecovery : Exception (CCXT / Network / Timeout)
+    Phase2_30sMonitoring --> ErrorRecovery : Exception (CCXT / Network / Timeout)
+    ErrorRecovery --> Phase1_Discovery : Log full traceback, sleep 15s, continue loop
 ```
 
-### Lifecycle
-- **SCANNING PHASE:** Full parallel universe scan via `ThreadPoolExecutor`. Candidates ranked by ML confidence. Highest-probability valid trade (passing exchange limits) is executed.
-- **MONITORING PHASE:** Per-poll-interval tick checks both price arithmetic and exchange `fetch_positions`. No idle waiting — the daemon checks the active position every `poll_interval_sec` seconds.
-- **Closure Sweep:** Triggered the instant an exit is detected. Cancels all remaining bracket orders for the symbol. No orphan exposure.
-- **Immediate scan resume:** After closure, the next iteration starts scanning without sleeping, minimizing re-entry latency.
+### Three-Phase Autonomous Lifecycle
+1. **Phase 1: Discovery & Execution (Every 15s)**
+   - Checks `active_trade_state.json` and Binance exchange state.
+   - If no active position:
+     - Scans 500+ symbols concurrently via `ThreadPoolExecutor`.
+     - Pure ML model probabilities sorted descending without hardcoded symbol bias.
+     - Validates against Binance dynamic exchange limits (`minNotional`, `minQty`).
+     - Sub-minimum setups logged as `[SKIPPED_MIN_NOTIONAL]` and skipped to next best setup.
+     - Selects single highest-conviction setup, configures isolated margin (handling code `-4168` gracefully) and max leverage, executes entry, and places 1:3 RR bracket orders with `reduceOnly=True`.
+2. **Phase 2: 30-Second Active Trade Monitoring Sub-Loop (`while active`)**
+   - Once a trade is open, enters a dedicated monitoring sub-loop.
+   - Sleeps for **30 seconds** (`time.sleep(30)`), then polls both local ticker price and Binance `fetch_positions()`.
+   - Reconciles bracket fills executed directly on the exchange.
+   - If a network error occurs, catches it, logs to audit trail, sleeps 15s, and **continues monitoring without terminating**.
+3. **Phase 3: Completion, Cleanup & Reset**
+   - The exact moment position closure is detected:
+     - Immediate **Closure Sweep** (`cancel_all_orders` and `sweep_all_orphan_orders`).
+     - Updates `active_trade_state.json` status to `CLOSED`.
+     - Appends full trade summary and PnL to `logs/platform_audit.log`.
+     - Breaks monitoring sub-loop and **immediately returns to Phase 1 Discovery** to scan 24/7.
+
+### Unbreakable Error Resilience
+- **Outer `while True` loop** envelops all phases in comprehensive `try...except Exception as e:` blocks.
+- Any network dropout, rate limit, or unexpected exception is caught, formatted with `traceback.format_exc()`, appended to `logs/platform_audit.log`, followed by a 15-second recovery delay before auto-continuing the loop.
+- **Automatic CCXT Retries:** Transient disconnects retry up to 3 times with exponential backoff (`retry_ccxt_call`).
+- **Binance Code -4168:** If the user's account is in Multi-Assets mode, Binance prohibits switching to isolated margin; the engine logs an informational warning and proceeds with account default margin without crashing.
 
 ### 24/7 Running Command
 ```bash
-python cli.py execute --mode live --daemon --poll-interval 15 --threshold 0.35 --risk 0.05
+python cli.py execute --mode live --daemon --poll-interval 15 --monitor-interval 30 --threshold 0.35 --risk 0.05
 ```
 
 Stop cleanly with **Ctrl+C**.
@@ -374,7 +403,7 @@ streamlit run app.py
 
 ## 12. Automated Test Suite
 
-Run all 18 tests:
+Run all 21 tests:
 ```bash
 python -m unittest tests/test_platform.py -v
 ```
@@ -399,3 +428,6 @@ python -m unittest tests/test_platform.py -v
 | 16 | `test_16_pure_ml_probability_ranking_and_progress_callback` | Strict confidence sort + progress callback |
 | 17 | `test_17_daemon_run_loop_scanning_and_monitoring_phases` | SCANNING ↔ MONITORING phase transitions + closure resume |
 | 18 | `test_18_fetch_open_orders_warning_suppressed` | `fetchOpenOrders.warnWithoutSymbol = False` on adapter |
+| 19 | `test_19_daemon_unbreakable_error_resilience` | Network errors caught with traceback, 15s backoff, loop continues |
+| 20 | `test_20_binance_code_4168_multi_assets_margin_graceful_handling` | Code -4168 Multi-Assets error handled without raising |
+| 21 | `test_21_dedicated_30s_monitoring_sub_loop_and_closure_sweep` | Dedicated 30s monitoring sub-loop, closure sweep & immediate reset |

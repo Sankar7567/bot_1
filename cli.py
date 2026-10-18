@@ -490,14 +490,15 @@ def execute(
     risk: float = typer.Option(0.05, "--risk", "-r", help="Strict account equity risk fraction per trade (default 5% = 0.05)"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols list to evaluate"),
     timeframe: str = typer.Option("5m", "--timeframe", "-tf", help="Base execution timeframe"),
-    poll_interval: int = typer.Option(10, "--poll-interval", "-i", help="Polling interval in seconds"),
-    daemon: bool = typer.Option(False, "--daemon", "-d", help="Run continuously in background daemon loop"),
+    poll_interval: int = typer.Option(15, "--poll-interval", "-i", help="Scanning polling interval in seconds (default 15s)"),
+    monitor_interval: int = typer.Option(30, "--monitor-interval", help="Active trade monitoring interval in seconds (default 30s)"),
+    daemon: bool = typer.Option(False, "--daemon", "-d", help="Run continuously in bulletproof 24/7 background daemon loop"),
     iterations: Optional[int] = typer.Option(None, "--iterations", help="Maximum iterations to run if in daemon mode")
 ):
     """
     Executes trades in PAPER or LIVE mode on Binance Futures.
     Features ISOLATED margin mode, exchange max leverage inspection, 5% risk sizing,
-    1:3 RR bracket orders, strict global 1-trade rule, and automated orphan cleanup.
+    1:3 RR bracket orders, strict global 1-trade rule, 30s active monitoring, and automated orphan cleanup.
     """
     sym_list = None
     if symbols:
@@ -522,8 +523,41 @@ def execute(
     console.print(f"Current Account Equity: [bold green]${equity:.2f}[/bold green] | Target Risk per Trade: [yellow]{risk*100:.1f}%[/yellow]")
 
     if daemon:
-        console.print(f"[bold cyan]Starting Continuous Execution Daemon (Interval: {poll_interval}s)...[/bold cyan]")
-        engine.run_loop(poll_interval_sec=poll_interval, max_iterations=iterations)
+        console.print(f"[bold cyan]Starting Bulletproof 24/7 Autonomous Daemon ({engine.mode} Mode)...[/bold cyan]")
+        console.print(f"[cyan]Scanning interval: {poll_interval}s | Active trade monitoring interval: {monitor_interval}s[/cyan]")
+
+        def daemon_status_callback(phase: str, data: dict):
+            if phase == "SCANNING":
+                console.print(f"\n[bold cyan]══════════════════════════════════════════════════════════════════════════════[/bold cyan]")
+                console.print(f"[bold cyan]🔍 [PHASE 1: DISCOVERY & SCANNING] Scanning universe of {data.get('symbols_count', 500)} symbols...[/bold cyan]")
+                console.print(f"[bold cyan]══════════════════════════════════════════════════════════════════════════════[/bold cyan]")
+            elif phase == "EXECUTED":
+                console.print(f"\n[bold green]══════════════════════════════════════════════════════════════════════════════[/bold green]")
+                console.print(f"[bold green]⚡ [PHASE 1: ORDER EXECUTED] Entered {data.get('direction')} on {data.get('symbol')} at ${data.get('entry_price', 0):.4f}![/bold green]")
+                console.print(f"[green]   Confidence: {data.get('confidence', 0)*100:.1f}% | Size: {data.get('suggested_position_size')} | Leverage: {data.get('leverage')}x | SL: ${data.get('stop_loss', 0):.4f} | TP: ${data.get('take_profit', 0):.4f}[/green]")
+                console.print(f"[bold green]══════════════════════════════════════════════════════════════════════════════[/bold green]")
+            elif phase == "MONITORING":
+                console.print(f"\n[bold yellow]══════════════════════════════════════════════════════════════════════════════[/bold yellow]")
+                console.print(f"[bold yellow]⏱️  [PHASE 2: 30-SECOND ACTIVE TRADE MONITORING] Watching {data.get('symbol')} ({data.get('direction')})[/bold yellow]")
+                console.print(f"[yellow]   Entry: ${data.get('entry_price', 0):.4f} | SL: ${data.get('stop_loss', 0):.4f} | TP: ${data.get('take_profit', 0):.4f} | Polling exchange every {monitor_interval}s...[/yellow]")
+                console.print(f"[bold yellow]══════════════════════════════════════════════════════════════════════════════[/bold yellow]")
+            elif phase == "CLOSED":
+                console.print(f"\n[bold magenta]══════════════════════════════════════════════════════════════════════════════[/bold magenta]")
+                console.print(f"[bold magenta]🏁 [PHASE 3: COMPLETION, CLEANUP & RESET] Trade CLOSED on {data.get('symbol')} via {data.get('exit_reason')}![/bold magenta]")
+                console.print(f"[magenta]   Exit Price: ${data.get('exit_price', 0):.4f} | Final Equity: ${data.get('final_equity', 0):.2f} | Closure sweep complete. Resuming universe scan 24/7...[/magenta]")
+                console.print(f"[bold magenta]══════════════════════════════════════════════════════════════════════════════[/bold magenta]")
+            elif phase == "ERROR_RETRY":
+                console.print(f"\n[bold red]══════════════════════════════════════════════════════════════════════════════[/bold red]")
+                console.print(f"[bold red]⚠️  [ERROR RESILIENCE] {data.get('error')}[/bold red]")
+                console.print(f"[red]   Sleeping {data.get('sleep_sec', 15)}s before automatic retry. Daemon continues running...[/red]")
+                console.print(f"[bold red]══════════════════════════════════════════════════════════════════════════════[/bold red]")
+
+        engine.run_loop(
+            poll_interval_sec=poll_interval,
+            monitor_interval_sec=monitor_interval,
+            max_iterations=iterations,
+            status_callback=daemon_status_callback
+        )
     else:
         total_syms = len(engine.symbols)
         console.print(f"[cyan]Scanning universe of {total_syms} symbols for high-conviction setups...[/cyan]")

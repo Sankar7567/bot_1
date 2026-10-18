@@ -45,6 +45,7 @@ import json
 import time
 import math
 import logging
+import traceback
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from pathlib import Path
 from datetime import datetime, timezone
@@ -69,6 +70,22 @@ LOGS_DIR = Path("logs")
 PAPER_WALLET_PATH = SIGNALS_DIR / "paper_wallet.json"
 SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def retry_ccxt_call(func: Callable, max_retries: int = 3, initial_delay: float = 1.0) -> Any:
+    """Executes a CCXT network call with automatic retry on transient network/disconnect errors."""
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout, ccxt.DDoSProtection) as err:
+            if attempt == max_retries - 1:
+                logger.error(f"[CCXT_RETRY] Failed after {max_retries} attempts: {err}")
+                raise
+            delay = initial_delay * (2 ** attempt)
+            logger.warning(
+                f"[CCXT_RETRY] Transient network error: {err}. Retrying in {delay:.1f}s (attempt {attempt+1}/{max_retries})..."
+            )
+            time.sleep(delay)
 
 
 def validate_binance_credentials(api_key: Optional[str], api_secret: Optional[str]) -> bool:
@@ -311,7 +328,7 @@ class LiveExchangeAdapter:
     def fetch_equity_and_balance(self) -> Tuple[float, float]:
         """Fetches total wallet equity and available margin in USDT."""
         try:
-            balance = self.exchange.fetch_balance()
+            balance = retry_ccxt_call(lambda: self.exchange.fetch_balance())
             usdt_info = balance.get("USDT", {})
             total_equity = float(usdt_info.get("total", 0.0) or balance.get("total", {}).get("USDT", 0.0))
             free_margin = float(usdt_info.get("free", 0.0) or balance.get("free", {}).get("USDT", 0.0))
@@ -330,7 +347,7 @@ class LiveExchangeAdapter:
 
         try:
             # CCXT fetch_leverage_tiers returns tiers for symbols
-            tiers = self.exchange.fetch_leverage_tiers([symbol])
+            tiers = retry_ccxt_call(lambda: self.exchange.fetch_leverage_tiers([symbol]))
             sym_tiers = tiers.get(symbol, [])
             if not sym_tiers:
                 # Try market id
@@ -369,7 +386,7 @@ class LiveExchangeAdapter:
     def configure_symbol_margin_and_leverage(self, symbol: str, leverage: int) -> None:
         """
         Enforces ISOLATED margin mode and applies symbol's maximum leverage.
-        Handles idempotent API responses gracefully.
+        Gracefully handles code -4168 (Multi-Assets mode) and idempotent responses.
         """
         # 1. Set Margin Mode to ISOLATED
         try:
@@ -377,7 +394,12 @@ class LiveExchangeAdapter:
             logger.info(f"Set {symbol} margin mode to ISOLATED.")
         except Exception as e:
             msg = str(e).lower()
-            if "no need to change" in msg or "already" in msg or "margin type cannot be changed" in msg:
+            if "-4168" in msg or "multi-assets" in msg or "multi-asset" in msg:
+                logger.warning(
+                    f"[MARGIN_MODE] Binance code -4168: Multi-Assets mode is active on account; "
+                    f"cannot adjust {symbol} to isolated-margin mode. Proceeding with account default margin mode."
+                )
+            elif "no need to change" in msg or "already" in msg or "margin type cannot be changed" in msg:
                 logger.debug(f"{symbol} is already set to ISOLATED.")
             else:
                 logger.warning(f"Note on setting margin mode for {symbol}: {e}")
@@ -392,7 +414,7 @@ class LiveExchangeAdapter:
     def get_open_positions(self) -> List[Dict[str, Any]]:
         """Queries the exchange for any currently active futures positions."""
         try:
-            positions = self.exchange.fetch_positions()
+            positions = retry_ccxt_call(lambda: self.exchange.fetch_positions())
             active = []
             for p in positions:
                 contracts = float(p.get("contracts", 0.0) or p.get("size", 0.0) or 0.0)
@@ -406,7 +428,7 @@ class LiveExchangeAdapter:
     def cancel_all_orders_for_symbol(self, symbol: str) -> int:
         """Cancels all open orders for a specific symbol."""
         try:
-            res = self.exchange.cancel_all_orders(symbol)
+            res = retry_ccxt_call(lambda: self.exchange.cancel_all_orders(symbol))
             logger.info(f"Cancelled all open orders for {symbol}.")
             return len(res) if isinstance(res, list) else 1
         except Exception as e:
@@ -419,7 +441,7 @@ class LiveExchangeAdapter:
         If no position exists for that symbol, cancels the lingering bracket orders.
         """
         try:
-            open_orders = self.exchange.fetch_open_orders()
+            open_orders = retry_ccxt_call(lambda: self.exchange.fetch_open_orders())
             if not open_orders:
                 return 0
 
@@ -431,7 +453,7 @@ class LiveExchangeAdapter:
                 sym = o.get("symbol")
                 if sym not in active_symbols:
                     try:
-                        self.exchange.cancel_order(o["id"], sym)
+                        retry_ccxt_call(lambda: self.exchange.cancel_order(o["id"], sym))
                         cancelled_count += 1
                         logger.info(f"[ORPHAN_CLEANUP] Cancelled orphan order {o['id']} on {sym}")
                     except Exception as err:
@@ -455,7 +477,7 @@ class LiveExchangeAdapter:
         lock is released promptly and the next scan cycle begins.
         """
         try:
-            positions = self.exchange.fetch_positions([symbol])
+            positions = retry_ccxt_call(lambda: self.exchange.fetch_positions([symbol]))
             for pos in positions:
                 contracts = float(pos.get("contracts", 0.0) or pos.get("size", 0.0) or 0.0)
                 if abs(contracts) > 1e-6:
@@ -658,17 +680,55 @@ class DualModeExecutionEngine:
         return 100.0
 
     def get_active_trade(self) -> Optional[Dict[str, Any]]:
-        """Reads current global active trade state from disk."""
-        if not ACTIVE_TRADE_PATH.exists():
-            return None
-        try:
-            with open(ACTIVE_TRADE_PATH, "r") as f:
-                state = json.load(f)
-                if state.get("status") == "OPEN":
-                    return state
-        except Exception as e:
-            logger.error(f"Error reading active trade state: {e}")
-        return None
+        """
+        Reads current global active trade state from disk, and in LIVE mode
+        cross-verifies with active positions on the exchange.
+        """
+        trade_from_file = None
+        if ACTIVE_TRADE_PATH.exists():
+            try:
+                with open(ACTIVE_TRADE_PATH, "r") as f:
+                    state = json.load(f)
+                    if state.get("status") == "OPEN":
+                        trade_from_file = state
+            except Exception as e:
+                logger.error(f"Error reading active trade state: {e}")
+
+        # In LIVE mode, if active_trade_state.json is missing or says CLOSED,
+        # but there is an active position on the exchange (e.g. after a process restart),
+        # recover active trade state directly from the exchange!
+        if trade_from_file is None and self.mode == "LIVE" and self.live_adapter:
+            try:
+                open_pos = self.live_adapter.get_open_positions()
+                if open_pos:
+                    p = open_pos[0]
+                    sym = p.get("symbol")
+                    contracts = float(p.get("contracts", 0.0) or p.get("size", 0.0) or 0.0)
+                    entry_p = float(p.get("entryPrice", 0.0) or 0.0)
+                    side = p.get("side", "long").upper()
+                    if contracts < 0:
+                        side = "SHORT"
+                    elif contracts > 0 and side not in ["LONG", "SHORT"]:
+                        side = "LONG"
+                    recovered_trade = {
+                        "status": "OPEN",
+                        "symbol": sym,
+                        "direction": side,
+                        "entry_price": entry_p,
+                        "stop_loss": entry_p * 0.98 if side == "LONG" else entry_p * 1.02,
+                        "take_profit": entry_p * 1.06 if side == "LONG" else entry_p * 0.94,
+                        "risk_pct": self.risk_pct * 100.0,
+                        "suggested_position_size": abs(contracts),
+                        "mode": "LIVE",
+                        "recovered_from_exchange": True
+                    }
+                    self.save_active_trade(recovered_trade)
+                    logger.info(f"[EXCHANGE_RECOVERY] Detected existing open position on {sym} ({side}) on Binance. Resuming monitoring.")
+                    return recovered_trade
+            except Exception as e:
+                logger.warning(f"Could not inspect exchange for existing positions: {e}")
+
+        return trade_from_file
 
     def save_active_trade(self, trade: Optional[Dict[str, Any]]) -> None:
         """Persists or clears global active trade state on disk."""
@@ -1216,119 +1276,200 @@ class DualModeExecutionEngine:
         self.latest_scan_leaderboard = leaderboard
         return executed_payload
 
-    def run_loop(self, poll_interval_sec: int = 10, max_iterations: Optional[int] = None) -> None:
+    def run_loop(
+        self,
+        poll_interval_sec: int = 15,
+        monitor_interval_sec: int = 30,
+        max_iterations: Optional[int] = None,
+        status_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+    ) -> None:
         """
-        Runs the execution engine as a continuous 24/7 daemon loop.
+        Runs the execution engine as a completely bulletproof, 24/7 autonomous daemon.
 
-        Lifecycle per iteration:
-          ┌─ SCANNING PHASE ───────────────────────────────────────────────────────┐
-          │  No active trade found → Full universe scan across 500+ symbols.       │
-          │  Pure ML probability ranking → Select highest-conviction valid trade.  │
-          │  If a trade is executed → transition to MONITORING PHASE.             │
+        Infinite Autonomous Lifecycle:
+          ┌─ PHASE 1: DISCOVERY & EXECUTION ───────────────────────────────────────┐
+          │  Check active_trade_state.json & exchange state.                       │
+          │  If no trade is active:                                                │
+          │    - Full parallel scan across 500+ symbols.                           │
+          │    - Pure ML confidence ranking (descending).                          │
+          │    - Dynamic limit checks (minNotional, minQty, sub-minimum skipping). │
+          │    - Execute single global best trade with 1:3 RR brackets.           │
           └────────────────────────────────────────────────────────────────────────┘
-          ┌─ MONITORING PHASE ─────────────────────────────────────────────────────┐
-          │  Active trade detected → Tick-by-tick TP/SL monitoring sub-loop.      │
-          │  Two-layer exit detection every poll_interval_sec seconds:            │
-          │    Layer 1: Local price arithmetic (ticker vs TP/SL levels).          │
-          │    Layer 2: Live exchange reconciliation (fetch_positions check).      │
-          │  Once exit confirmed → Closure sweep → Log closure → Resume SCANNING. │
+          ┌─ PHASE 2: 30-SECOND ACTIVE TRADE MONITORING ───────────────────────────┐
+          │  Dedicated monitoring sub-loop (while trade is active).                │
+          │  Sleeps 30 seconds between ticks (time.sleep(30)).                     │
+          │  Two-layer exit detection: local price arithmetic & live exchange      │
+          │  reconciliation (fetch_positions check).                               │
+          │  Network dropouts handled with 15s recovery without crashing.          │
+          └────────────────────────────────────────────────────────────────────────┘
+          ┌─ PHASE 3: COMPLETION, CLEANUP & RESET ─────────────────────────────────┐
+          │  The instant position closure is detected:                             │
+          │    - Immediate Closure Sweep (cancel remaining bracket orders).        │
+          │    - Update active_trade_state.json to CLOSED.                         │
+          │    - Log trade summary and realized PnL to audit trail.                │
+          │    - Break monitoring sub-loop and IMMEDIATELY return to Phase 1!      │
           └────────────────────────────────────────────────────────────────────────┘
 
-        Never exits unless:
-          - KeyboardInterrupt (Ctrl+C by operator)
-          - max_iterations reached (test / bounded run)
+        Unbreakable Error Resilience:
+          - Envelops every iteration in try...except Exception as e.
+          - On any network error, rate limit, or unexpected exception: catches it,
+            logs full traceback to logs/platform_audit.log, sleeps 15s, and CONTINUES!
+          - Never exits unless KeyboardInterrupt (operator Ctrl+C) or max_iterations reached.
         """
         append_audit_log(
             "ENGINE_STARTED",
-            f"[DAEMON] Execution Engine started in {self.mode} mode | "
-            f"Poll Interval: {poll_interval_sec}s | Risk: {self.risk_pct*100:.1f}% | "
+            f"[DAEMON] Autonomous Execution Engine started in {self.mode} mode | "
+            f"Poll: {poll_interval_sec}s | Monitor: {monitor_interval_sec}s | Risk: {self.risk_pct*100:.1f}% | "
             f"Threshold: {self.confidence_threshold}"
         )
         logger.info(
-            f"[DAEMON] 24/7 daemon loop active | Mode: {self.mode} | "
-            f"Interval: {poll_interval_sec}s | Risk: {self.risk_pct*100:.1f}%"
+            f"[DAEMON] Bulletproof 24/7 daemon loop active | Mode: {self.mode} | "
+            f"Poll: {poll_interval_sec}s | Monitor: {monitor_interval_sec}s | Risk: {self.risk_pct*100:.1f}%"
         )
 
+        effective_monitor_interval = 0 if poll_interval_sec == 0 else monitor_interval_sec
         iterations = 0
-        try:
-            while True:
-                # ── Check iteration cap (used for tests / bounded runs) ──────────
-                if max_iterations is not None and iterations >= max_iterations:
-                    logger.info(f"[DAEMON] Reached max_iterations={max_iterations}. Exiting daemon loop.")
-                    break
 
+        while True:
+            # ── Check iteration cap (used for tests / bounded runs) ──────────────
+            if max_iterations is not None and iterations >= max_iterations:
+                logger.info(f"[DAEMON] Reached max_iterations={max_iterations}. Exiting daemon loop cleanly.")
+                break
+
+            try:
+                # Inspect active trade state (disk + live exchange cross-verification)
                 active_trade = self.get_active_trade()
 
-                if active_trade is not None:
-                    # ── MONITORING PHASE ─────────────────────────────────────────
-                    sym = active_trade.get("symbol", "UNKNOWN")
-                    direction = active_trade.get("direction", "?")
-                    entry = active_trade.get("entry_price", 0.0)
-                    sl = active_trade.get("stop_loss", 0.0)
-                    tp = active_trade.get("take_profit", 0.0)
-                    logger.info(
-                        f"[MONITOR] Active {direction} on {sym} | "
-                        f"Entry: ${entry:.4f} | SL: ${sl:.4f} | TP: ${tp:.4f} | "
-                        f"Watching for exit every {poll_interval_sec}s..."
-                    )
-                    exit_event = self.check_and_process_exit(active_trade)
-                    if exit_event is not None:
-                        # Trade closed — log summary and immediately return to scan
-                        equity = self.get_current_equity()
-                        exit_reason = exit_event.get("exit_reason", "UNKNOWN")
-                        exit_price = exit_event.get("exit_price", 0.0)
-                        net_pnl = exit_event.get("net_pnl", exit_event.get("final_equity", equity) - equity)
-                        logger.info(
-                            f"[DAEMON] Trade CLOSED | {sym} ({direction}) | "
-                            f"Exit: ${exit_price:.4f} via {exit_reason} | "
-                            f"Equity: ${equity:.2f} | Resuming universe scan..."
-                        )
-                        append_audit_log(
-                            "DAEMON_TRADE_CLOSED",
-                            f"Daemon detected closure of {sym} ({direction}) via {exit_reason}. "
-                            f"Resuming universe scan. Current equity: ${equity:.2f}",
-                            exit_event
-                        )
-                        # Immediately scan — skip sleep on closure to minimize re-entry latency
-                        iterations += 1
-                        continue
-                    else:
-                        logger.debug(
-                            f"[MONITOR] {sym} position still active. Next check in {poll_interval_sec}s."
-                        )
-                else:
-                    # ── SCANNING PHASE ───────────────────────────────────────────
-                    logger.info(
-                        f"[SCAN] No active trade. Starting universe scan across {len(self.symbols)} symbols..."
-                    )
+                if active_trade is None:
+                    # ══════════════════════════════════════════════════════════════
+                    # PHASE 1: DISCOVERY & EXECUTION
+                    # ══════════════════════════════════════════════════════════════
+                    sym_count = len(self.symbols)
+                    logger.info(f"[PHASE 1: DISCOVERY] Scanning universe of {sym_count} symbols for high-conviction setups...")
+                    if status_callback:
+                        status_callback("SCANNING", {"symbols_count": sym_count})
+
                     executed = self.step()
+                    iterations += 1
+
                     if executed:
                         sym_e = executed.get("symbol", "?")
                         dir_e = executed.get("direction", "?")
                         conf_e = executed.get("confidence", 0.0)
-                        equity = self.get_current_equity()
+                        equity_e = self.get_current_equity()
                         logger.info(
-                            f"[DAEMON] Trade OPENED | {sym_e} ({dir_e}) | "
-                            f"ML Conf: {conf_e*100:.1f}% | Equity: ${equity:.2f}"
+                            f"[PHASE 1: EXECUTED] Entered {dir_e} on {sym_e} (ML Conf: {conf_e*100:.1f}%) | "
+                            f"Leverage: {executed.get('leverage')}x | 1:3 RR Brackets Active | Equity: ${equity_e:.2f}"
                         )
+                        if status_callback:
+                            status_callback("EXECUTED", executed)
                         append_audit_log(
                             "DAEMON_TRADE_OPENED",
-                            f"Daemon opened {dir_e} on {sym_e} (ML conf: {conf_e*100:.1f}%). "
-                            f"Entering monitoring phase.",
+                            f"Phase 1 executed {dir_e} on {sym_e} (ML Conf: {conf_e*100:.1f}%). Transitioning to Phase 2 Monitoring.",
                             executed
                         )
+                        # Immediately transition to Phase 2 Monitoring without delay
+                        continue
                     else:
                         logger.info(
-                            f"[SCAN] No setup met threshold {self.confidence_threshold:.2f} or "
-                            f"all candidates were below exchange minimum size. Sleeping {poll_interval_sec}s."
+                            f"[PHASE 1: SCAN COMPLETE] No candidate met threshold {self.confidence_threshold:.2f} "
+                            f"or all candidates were below exchange minimum size. Sleeping {poll_interval_sec}s before next scan."
+                        )
+                        if poll_interval_sec > 0:
+                            time.sleep(poll_interval_sec)
+                        continue
+
+                # ══════════════════════════════════════════════════════════════════
+                # PHASE 2: 30-SECOND ACTIVE TRADE MONITORING SUB-LOOP
+                # ══════════════════════════════════════════════════════════════════
+                sym = active_trade.get("symbol", "UNKNOWN")
+                direction = active_trade.get("direction", "?")
+                entry_p = active_trade.get("entry_price", 0.0)
+                sl_p = active_trade.get("stop_loss", 0.0)
+                tp_p = active_trade.get("take_profit", 0.0)
+
+                logger.info(
+                    f"[PHASE 2: MONITORING] Active {direction} on {sym} | "
+                    f"Entry: ${entry_p:.4f} | SL: ${sl_p:.4f} | TP: ${tp_p:.4f} | "
+                    f"Entering dedicated 30-second monitoring sub-loop..."
+                )
+                if status_callback:
+                    status_callback("MONITORING", active_trade)
+
+                while True:
+                    if max_iterations is not None and iterations >= max_iterations:
+                        break
+
+                    # 30-Second cadence check
+                    if effective_monitor_interval > 0:
+                        logger.info(f"[PHASE 2: MONITORING] Sleeping {effective_monitor_interval}s before checking {sym}...")
+                        time.sleep(effective_monitor_interval)
+
+                    iterations += 1
+
+                    try:
+                        exit_event = self.check_and_process_exit(active_trade)
+                    except Exception as poll_err:
+                        tb = traceback.format_exc()
+                        logger.error(f"[MONITOR_ERROR] Network/API error while polling {sym}: {poll_err}\n{tb}")
+                        append_audit_log(
+                            "MONITOR_ERROR",
+                            f"Network error during active trade monitoring on {sym}: {poll_err}",
+                            {"symbol": sym, "error": str(poll_err), "traceback": tb},
+                            level="ERROR"
+                        )
+                        if status_callback:
+                            status_callback("ERROR_RETRY", {"error": str(poll_err), "sleep_sec": 15})
+                        time.sleep(15)
+                        continue
+
+                    if exit_event is not None:
+                        # ══════════════════════════════════════════════════════════
+                        # PHASE 3: COMPLETION, CLEANUP & RESET
+                        # ══════════════════════════════════════════════════════════
+                        equity = self.get_current_equity()
+                        exit_reason = exit_event.get("exit_reason", "UNKNOWN")
+                        exit_price = exit_event.get("exit_price", 0.0)
+                        logger.info(
+                            f"[PHASE 3: CLEANUP & RESET] Trade CLOSED on {sym} via {exit_reason} at ${exit_price:.4f}! "
+                            f"Final Equity: ${equity:.2f} | Closure sweep complete. Returning to Phase 1 Discovery 24/7..."
+                        )
+                        if status_callback:
+                            status_callback("CLOSED", exit_event)
+                        append_audit_log(
+                            "DAEMON_TRADE_CLOSED",
+                            f"Phase 3 closed {sym} ({direction}) via {exit_reason} at ${exit_price:.4f}. "
+                            f"Final Equity: ${equity:.2f}. Resuming infinite universe scanning.",
+                            exit_event
+                        )
+                        # Break out of monitoring sub-loop and immediately return to Phase 1!
+                        break
+                    else:
+                        curr_p = self.fetch_live_ticker_price(sym)
+                        logger.info(
+                            f"[PHASE 2: MONITORING] {sym} ({direction}) position STILL OPEN. "
+                            f"Current Price: ${curr_p:.4f} | Next check in {effective_monitor_interval}s."
                         )
 
-                iterations += 1
-                time.sleep(poll_interval_sec)
-
-        except KeyboardInterrupt:
-            logger.info("[DAEMON] Keyboard interrupt received. Shutting down daemon loop gracefully.")
-            append_audit_log(
-                "ENGINE_STOPPED",
-                f"Execution Engine daemon stopped by operator after {iterations} iterations."
-            )
+            except KeyboardInterrupt:
+                logger.info("[DAEMON] KeyboardInterrupt received from operator. Shutting down daemon gracefully.")
+                append_audit_log(
+                    "ENGINE_STOPPED",
+                    f"Execution Engine daemon stopped by operator after {iterations} iterations."
+                )
+                break
+            except Exception as e:
+                # Unbreakable outer error recovery: catch all exceptions, log traceback, sleep 15s, continue loop!
+                tb = traceback.format_exc()
+                logger.error(f"[UNHANDLED_EXCEPTION] Execution daemon error: {e}\n{tb}")
+                append_audit_log(
+                    "DAEMON_EXCEPTION",
+                    f"Unhandled error in execution daemon: {e}",
+                    {"error": str(e), "traceback": tb},
+                    level="ERROR"
+                )
+                if status_callback:
+                    status_callback("ERROR_RETRY", {"error": str(e), "sleep_sec": 15})
+                logger.info("[DAEMON_RECOVERY] Sleeping 15 seconds before auto-recovering infinite execution loop...")
+                time.sleep(15)
+                continue
