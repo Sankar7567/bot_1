@@ -677,5 +677,49 @@ def status():
     console.print(table)
 
 
+@app.command()
+def test_cleanup(
+    symbol: str = typer.Option("BTC/USDT:USDT", "--symbol", "-s", help="Symbol to test bracket order cleanup on"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="Binance API Key (or loaded from .env)"),
+    secret: Optional[str] = typer.Option(None, "--secret", help="Binance API Secret (or loaded from .env)")
+):
+    """
+    Mandatory Live Test Verification Protocol:
+    Places test bracket orders, runs aggressive closure sweep with verification loop,
+    and asserts via fetch_open_orders that zero open orders remain.
+    """
+    console.print(f"[bold cyan]Starting Live Bracket Order Cleanup Verification Protocol on {symbol}...[/bold cyan]")
+    try:
+        engine = DualModeExecutionEngine(
+            mode="LIVE",
+            api_key=api_key,
+            api_secret=secret
+        )
+    except Exception as e:
+        console.print(f"[bold red]Failed to initialize engine: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+    if engine.mode != "LIVE" or not engine.live_adapter:
+        console.print("[bold red]Failed to connect in LIVE mode with valid Binance credentials.[/bold red]")
+        raise typer.Exit(code=1)
+
+    result = engine.verify_orphan_cleanup_test(symbol=symbol)
+
+    table = Table(title=f"Bracket Order Cleanup Verification: {result.get('symbol', symbol)}")
+    table.add_column("Step / Check", style="cyan")
+    table.add_column("Details", style="magenta")
+
+    for s in result.get("steps", []):
+        table.add_row("Protocol Step", str(s))
+
+    console.print(table)
+
+    if result.get("passed"):
+        console.print("[bold green]✓ LIVE TEST PASSED: 100% reliable bracket cleanup verified with 0 leftover orphan orders![/bold green]")
+    else:
+        console.print(f"[bold red]✗ LIVE TEST FAILED: {result.get('error') or 'Orphan orders detected'}[/bold red]")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

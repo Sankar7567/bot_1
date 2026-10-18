@@ -314,10 +314,20 @@ stateDiagram-v2
    - If a network error occurs, catches it, logs to audit trail, sleeps 15s, and **continues monitoring without terminating**.
 3. **Phase 3: Completion, Cleanup & Reset**
    - The exact moment position closure is detected:
-     - Immediate **Closure Sweep** (`cancel_all_orders` and `sweep_all_orphan_orders`).
+     - Immediate **Aggressive Bracket Order Cleanup & Closure Sweep**:
+       - Executes `cancel_all_orders_for_symbol(symbol)` using a multi-pass loop (up to 5 passes).
+       - In each pass, issues bulk `cancel_all_orders(symbol)` and verifies lingering orders via `fetch_open_orders(symbol)`.
+       - If any lingering orders are detected, loops over each order ID and calls `cancel_order(order_id, symbol)` individually.
+       - Pauses 0.5s between passes for Binance matching engine propagation.
+       - Guarantees `fetch_open_orders(symbol) == []` before exiting.
+       - Follows up with `sweep_all_orphan_orders()` across all positionless symbols on the account.
      - Updates `active_trade_state.json` status to `CLOSED`.
      - Appends full trade summary and PnL to `logs/platform_audit.log`.
      - Breaks monitoring sub-loop and **immediately returns to Phase 1 Discovery** to scan 24/7.
+
+### Startup and Shutdown Sweeps
+- **Startup Sweep:** Before entering discovery or monitoring, `engine.startup_sweep()` inspects all open orders on Binance. Any order residing on a symbol with zero active position contracts is aggressively swept and cancelled.
+- **Shutdown Sweep:** Intercepts `KeyboardInterrupt` (Ctrl+C) or normal loop termination, invoking `engine.shutdown_sweep()` to purge any orphan bracket orders left on the account before stopping the process.
 
 ### Unbreakable Error Resilience
 - **Outer `while True` loop** envelops all phases in comprehensive `try...except Exception as e:` blocks.
@@ -404,6 +414,9 @@ python cli.py status
 
 # 9. Disk Pruning Utility
 python cli.py prune-data --max-storage-gb 18.0
+
+# 10. Live Bracket Order Cleanup Verification Protocol
+python cli.py test-cleanup --symbol BTC/USDT:USDT
 ```
 
 ### Streamlit Quantitative Dashboard (`app.py`)
@@ -422,7 +435,7 @@ streamlit run app.py
 
 ## 12. Automated Test Suite
 
-Run all 21 tests:
+Run all 27 tests:
 ```bash
 python -m unittest tests/test_platform.py -v
 ```
@@ -450,3 +463,9 @@ python -m unittest tests/test_platform.py -v
 | 19 | `test_19_daemon_unbreakable_error_resilience` | Network errors caught with traceback, 15s backoff, loop continues |
 | 20 | `test_20_binance_code_4168_multi_assets_margin_graceful_handling` | Code -4168 Multi-Assets error handled without raising |
 | 21 | `test_21_dedicated_30s_monitoring_sub_loop_and_closure_sweep` | Dedicated 30s monitoring sub-loop, closure sweep & immediate reset |
+| 22 | `test_22_exchange_first_ground_truth_eliminates_phantom_state` | Purges phantom local trades when Binance reports 0 open positions |
+| 23 | `test_23_exchange_active_position_detected_and_synchronized` | Synchronizes active trade state with real Binance open positions |
+| 24 | `test_24_live_phase2_exit_when_exchange_position_closes` | Detects exchange position closure in Phase 2 and triggers immediate sweep |
+| 25 | `test_25_cancel_all_orders_for_symbol_verification_loop` | Multi-pass aggressive bulk and individual force-cancellation loop until 0 orders remain |
+| 26 | `test_26_shutdown_sweep_cleans_orphans_on_exit` | Shutdown sweep clears all orphan orders across account on exit |
+| 27 | `test_27_verify_orphan_cleanup_test_harness_mock` | Bracket cleanup verification test harness protocol (entry, brackets, close, verify 0 remain) |

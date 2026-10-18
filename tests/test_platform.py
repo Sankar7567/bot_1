@@ -849,6 +849,86 @@ class TestCryptoMLPlatform(unittest.TestCase):
             final_state = json.load(f)
         self.assertEqual(final_state["status"], "CLOSED")
 
+    def test_25_cancel_all_orders_for_symbol_verification_loop(self):
+        """
+        Verify cancel_all_orders_for_symbol aggressively invokes cancel_all_orders,
+        verifies via fetch_open_orders, force-cancels any lingering orders individually,
+        and loops until zero open orders remain.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.exchange = MagicMock()
+
+        # Simulate pass 1: bulk cancel returns 1 order, but fetch_open_orders still sees a lingering bracket order
+        adapter.exchange.cancel_all_orders.return_value = [{"id": "tp_123"}]
+        # First call to fetch_open_orders returns lingering SL order; second call returns empty list []
+        lingering_order = {"id": "sl_456", "symbol": "BTC/USDT:USDT"}
+        adapter.exchange.fetch_open_orders.side_effect = [[lingering_order], []]
+        adapter.exchange.cancel_order.return_value = {"id": "sl_456", "status": "canceled"}
+
+        cancelled_count = adapter.cancel_all_orders_for_symbol("BTC/USDT:USDT")
+
+        # Must have called cancel_all_orders across passes
+        adapter.exchange.cancel_all_orders.assert_called_with("BTC/USDT:USDT")
+        self.assertEqual(adapter.exchange.cancel_all_orders.call_count, 2)
+        # Must have verified via fetch_open_orders
+        self.assertEqual(adapter.exchange.fetch_open_orders.call_count, 2)
+        # Must have force-cancelled the lingering order
+        adapter.exchange.cancel_order.assert_called_once_with("sl_456", "BTC/USDT:USDT")
+        self.assertEqual(cancelled_count, 3)
+
+    def test_26_shutdown_sweep_cleans_orphans_on_exit(self):
+        """
+        Verify shutdown_sweep invokes sweep_all_orphan_orders to guarantee zero
+        leftover orders on daemon stop.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        mock_adapter = MagicMock(spec=LiveExchangeAdapter)
+        mock_adapter.sweep_all_orphan_orders.return_value = 3
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "LIVE"
+        engine.live_adapter = mock_adapter
+        engine.paper_wallet = None
+
+        engine.shutdown_sweep()
+
+        mock_adapter.sweep_all_orphan_orders.assert_called_once()
+
+    def test_27_verify_orphan_cleanup_test_harness_mock(self):
+        """
+        Verify verify_orphan_cleanup_test harness protocol:
+        Simulates entry, brackets, close, and assert 0 remain.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.exchange = MagicMock()
+
+        adapter.exchange.fetch_balance.return_value = {"USDT": {"free": 50.0, "total": 50.0}}
+        adapter.get_open_positions = MagicMock(return_value=[])
+        adapter.exchange.market.return_value = {
+            "limits": {"amount": {"min": 0.001}, "cost": {"min": 5.0}},
+            "precision": {"amount": 0.001, "price": 0.01}
+        }
+        adapter.exchange.fetch_ticker.return_value = {"last": 50000.0, "close": 50000.0}
+        adapter.exchange.amount_to_precision.return_value = "0.001"
+        adapter.exchange.price_to_precision.return_value = "50000.00"
+        adapter.exchange.create_order.return_value = {"id": "mock_order_1", "average": 50000.0}
+        adapter.cancel_all_orders_for_symbol = MagicMock(return_value=2)
+        adapter.exchange.fetch_open_orders.return_value = []
+
+        res = adapter.verify_orphan_cleanup_test("BTC/USDT:USDT")
+
+        self.assertTrue(res["passed"], "Mock cleanup test protocol must pass.")
+        self.assertEqual(len(res["error"] or ""), 0)
+        adapter.cancel_all_orders_for_symbol.assert_called()
+
 
 if __name__ == "__main__":
     unittest.main()

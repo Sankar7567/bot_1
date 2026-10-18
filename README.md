@@ -25,7 +25,7 @@ bot/
 ├── requirements.txt           # Core system dependencies
 ├── .env.example               # Template for Binance API credentials (copy to .env, never commit)
 ├── tests/
-│   └── test_platform.py       # Comprehensive automated test suite (18 test cases)
+│   └── test_platform.py       # Comprehensive automated test suite (27 test cases)
 ├── docs/
 │   └── ARCHITECTURE.md        # Complete quantitative system manual & data flow diagrams
 ├── signals/
@@ -132,9 +132,21 @@ The daemon runs **infinitely without crashing**, cycling seamlessly through:
 > [!IMPORTANT]
 > **Exchange-First Ground Truth (`exchange.fetch_positions()`):** The daemon treats your actual Binance Futures account as the absolute authority. If local state contains phantom trades (e.g. from tests or previous paper runs), they are automatically purged on startup and on every loop iteration. If 0 positions exist on Binance, the slate is wiped clean, orphan orders are swept, and universal scanning resumes immediately.
 
-Stop anytime with **Ctrl+C** — the daemon intercepts the interrupt, shuts down gracefully, and logs the exit.
+Stop anytime with **Ctrl+C** — the daemon intercepts the interrupt, executes a full shutdown orphan sweep across the account, shuts down gracefully, and logs the exit.
 
-### 7. System Status & Disk Usage Meter
+### 7. Live Bracket Order Cleanup Verification
+Verifies the aggressive bracket order cleanup protocol directly on Binance Futures with a minimum-size test order or existing position reduce-only bracket:
+```bash
+# Verify cleanup on default or specific symbol
+python cli.py test-cleanup --symbol BTC/USDT:USDT
+```
+Protocol executed:
+1. Places a test bracket order setup on Binance.
+2. Initiates aggressive multi-pass closure sweep (`cancel_all_orders` + individual `cancel_order` force-cancellations).
+3. Verifies via `fetch_open_orders(symbol)` that zero open orders linger.
+4. Emits a rich validation table and asserts 100% cleanup pass.
+
+### 8. System Status & Disk Usage Meter
 ```bash
 python cli.py status
 ```
@@ -207,6 +219,18 @@ In LIVE mode, `check_and_process_exit()` uses **two independent layers**:
 
 The monitoring sub-loop checks this every 30 seconds (`--monitor-interval 30`), ensuring prompt bracket order cleanup and state reset.
 
+### Aggressive Bracket Order Cleanup & Verification Loop
+When either a Take-Profit or Stop-Loss order triggers and fills on Binance, the opposing bracket order must not linger as an orphan:
+1. **Multi-Pass Loop (Up to 5 Passes):** Calls `cancel_all_orders(symbol)` to issue bulk cancellation.
+2. **Lingering Order Verification:** Follows up by inspecting `fetch_open_orders(symbol)`.
+3. **Individual Force-Cancellations:** If any lingering orders are detected, loops over each order ID and calls `cancel_order(order_id, symbol)` individually.
+4. **Exchange Propagation Delay:** Pauses 0.5s between passes for Binance matching engine propagation.
+5. **Zero-Orphan Invariance:** Repeats until `fetch_open_orders(symbol)` returns an empty list `[]`.
+
+### Account-Wide Startup & Shutdown Sweeps
+- **Startup Sweep:** Before commencing discovery or monitoring, queries all open orders across the account. For any symbol without an active position, it triggers `cancel_all_orders_for_symbol()` to eliminate stale orders from prior crashed sessions.
+- **Shutdown Sweep:** Intercepts SIGINT/Ctrl+C or clean daemon termination, running a comprehensive account sweep to guarantee zero leftover orders when stopping.
+
 ### Binance `fetchOpenOrders` Warning Suppression
 `LiveExchangeAdapter` sets `exchange.options["fetchOpenOrders"]["warnWithoutSymbol"] = False` on initialization. This suppresses the CCXT advisory emitted when calling `fetch_open_orders()` without a symbol — we call it intentionally during the global orphan sweep.
 
@@ -218,7 +242,7 @@ The monitoring sub-loop checks this every 30 seconds (`--monitor-interval 30`), 
 python -m unittest tests/test_platform.py -v
 ```
 
-All **21 tests** pass and validate:
+All **27 tests** pass and validate:
 
 | # | Test | What It Verifies |
 |---|---|---|
@@ -243,3 +267,9 @@ All **21 tests** pass and validate:
 | 19 | Error Resilience | CCXT network errors caught, logged with traceback, loop continues |
 | 20 | Code -4168 Handling | Multi-Assets isolated margin error handled gracefully without raising |
 | 21 | 30s Monitoring & Sweep | Dedicated 30s monitoring sub-loop, closure sweep & immediate reset |
+| 22 | Exchange Ground Truth | Zero open positions on Binance purges phantom local state files |
+| 23 | Exchange Position Sync | Active Binance positions detected and synchronized to state file |
+| 24 | Live Exit on Position Zero | Position contracts dropping to 0 triggers exit and closure sweep |
+| 25 | Bracket Cleanup Verification | Multi-pass cancellation + verification loop force-cancels orphans |
+| 26 | Shutdown Orphan Sweep | Shutdown sweep cleans all orphan orders across account on exit |
+| 27 | Live Orphan Test Harness | Test harness protocol confirms 100% zero leftover bracket orders |
