@@ -33,7 +33,7 @@ from backtester import BacktestEngine, compare_risk_profiles
 from rolling_train_pipeline import RollingBatchPipeline
 from scanner import GlobalUniverseScanner
 from live_signals import LiveSignalGenerator, LATEST_SIGNAL_PATH, ACTIVE_TRADE_PATH, AUDIT_LOG_PATH
-from execution import DualModeExecutionEngine, PaperWallet, PAPER_WALLET_PATH
+from execution import DualModeExecutionEngine, PaperWallet, PAPER_WALLET_PATH, validate_binance_credentials
 from cli import app
 
 
@@ -327,15 +327,129 @@ class TestCryptoMLPlatform(unittest.TestCase):
     def test_13_feature_importance_booster_interface(self):
         """Verify ModelTrainer.get_feature_importance() works cleanly without NotFittedError."""
         trainer = ModelTrainer(pipeline=self.pipeline)
-        # Verify model loading
         loaded = trainer.load_model()
         if loaded:
             fi = trainer.get_feature_importance()
             self.assertIsInstance(fi, dict)
             self.assertGreater(len(fi), 0)
-            # Verify sorted descending
             vals = list(fi.values())
             self.assertEqual(vals, sorted(vals, reverse=True))
+
+    def test_14_credential_validation_and_graceful_fallback(self):
+        """Verify credential validator and graceful fallback to PAPER mode on missing/invalid keys."""
+        # Test validator function
+        self.assertFalse(validate_binance_credentials("", ""))
+        self.assertFalse(validate_binance_credentials("your_binance_api_key_here", "your_binance_api_secret_here"))
+        self.assertFalse(validate_binance_credentials("short", "short"))
+        self.assertTrue(validate_binance_credentials("abcdef1234567890abcdef1234567890", "1234567890abcdef1234567890abcdef"))
+
+        # Test engine fallback when initialized in LIVE mode with invalid credentials
+        engine = DualModeExecutionEngine(
+            mode="LIVE",
+            api_key="your_binance_api_key_here",
+            api_secret="your_binance_api_secret_here",
+            wallet_path=Path("test_fallback_wallet.json")
+        )
+        self.assertEqual(engine.mode, "PAPER", "Engine must fall back to PAPER mode when keys are invalid!")
+        self.assertIsNotNone(engine.paper_wallet)
+
+        if Path("test_fallback_wallet.json").exists():
+            Path("test_fallback_wallet.json").unlink()
+
+    def test_15_dynamic_limits_and_sub_minimum_skipping(self):
+        """Verify engine skips sub-minimum trades and selects next valid top setup without crashing."""
+        test_wallet = Path("test_skip_wallet.json")
+        engine = DualModeExecutionEngine(
+            mode="PAPER",
+            risk_pct=0.05,
+            confidence_threshold=0.30,
+            initial_paper_equity=100.0,
+            wallet_path=test_wallet,
+            pipeline=self.pipeline
+        )
+        engine.save_active_trade({"status": "CLOSED"})
+
+        # Mock evaluate_symbol_for_entry to simulate 2 candidates:
+        # Cand 1: High confidence (0.85), but tiny price ($0.001) causing notional < $5 minNotional
+        # Cand 2: Lower confidence (0.65), standard price ($100) satisfying minNotional
+        cand_tiny = {
+            "symbol": "TINY/USDT:USDT",
+            "bar": pd.Series({"close": 0.001, "atr_14": 0.005}),
+            "direction": "LONG",
+            "confidence": 0.85
+        }
+        cand_valid = {
+            "symbol": "VALID/USDT:USDT",
+            "bar": pd.Series({"close": 100.0, "atr_14": 1.0}),
+            "direction": "LONG",
+            "confidence": 0.65
+        }
+
+        # Override evaluate_symbol_for_entry to return these two mock setups
+        def mock_eval(sym):
+            return cand_tiny if "TINY" in sym else cand_valid
+
+        engine.evaluate_symbol_for_entry = mock_eval
+        engine._symbols = ["TINY/USDT:USDT", "VALID/USDT:USDT"]
+
+        # Run step
+        executed = engine.step()
+        self.assertIsNotNone(executed)
+        # Verify TINY was skipped due to sub-minimum notional and VALID was executed
+        self.assertEqual(executed["symbol"], "VALID/USDT:USDT", "Engine must skip sub-minimum setup and execute valid setup!")
+        
+        # Check leaderboard
+        lb = engine.latest_scan_leaderboard
+        self.assertEqual(len(lb), 2)
+        tiny_item = next(item for item in lb if item["symbol"] == "TINY/USDT:USDT")
+        valid_item = next(item for item in lb if item["symbol"] == "VALID/USDT:USDT")
+
+        self.assertEqual(tiny_item["status"], "SKIPPED_MIN_NOTIONAL")
+        self.assertEqual(valid_item["status"], "SELECTED_AND_EXECUTED")
+
+        engine.save_active_trade({"status": "CLOSED"})
+        if test_wallet.exists():
+            test_wallet.unlink()
+
+    def test_16_pure_ml_probability_ranking_and_progress_callback(self):
+        """Verify candidate ranking strictly follows raw ML probability and triggers progress callback."""
+        test_wallet = Path("test_rank_wallet.json")
+        engine = DualModeExecutionEngine(
+            mode="PAPER",
+            risk_pct=0.05,
+            confidence_threshold=0.30,
+            wallet_path=test_wallet,
+            pipeline=self.pipeline
+        )
+        engine.save_active_trade({"status": "CLOSED"})
+
+        cands = [
+            {"symbol": "SYM_C", "bar": pd.Series({"close": 50.0, "atr_14": 0.5}), "direction": "LONG", "confidence": 0.45},
+            {"symbol": "SYM_A", "bar": pd.Series({"close": 50.0, "atr_14": 0.5}), "direction": "LONG", "confidence": 0.82},
+            {"symbol": "SYM_B", "bar": pd.Series({"close": 50.0, "atr_14": 0.5}), "direction": "SHORT", "confidence": 0.68},
+        ]
+        sym_map = {c["symbol"]: c for c in cands}
+        engine.evaluate_symbol_for_entry = lambda s: sym_map.get(s)
+        engine._symbols = ["SYM_C", "SYM_A", "SYM_B"]
+
+        progress_calls = []
+        def cb(completed, total, sym, cand):
+            progress_calls.append((completed, total, sym))
+
+        executed = engine.step(progress_callback=cb)
+        self.assertIsNotNone(executed)
+        # Highest confidence (SYM_A with 0.82) must be selected
+        self.assertEqual(executed["symbol"], "SYM_A")
+        self.assertEqual(len(progress_calls), 3)
+
+        # Verify leaderboard is ranked strictly descending: 0.82 > 0.68 > 0.45
+        lb = engine.latest_scan_leaderboard
+        confs = [item["confidence"] for item in lb]
+        self.assertEqual(confs, sorted(confs, reverse=True))
+
+        engine.save_active_trade({"status": "CLOSED"})
+        if test_wallet.exists():
+            test_wallet.unlink()
 
 
 if __name__ == "__main__":

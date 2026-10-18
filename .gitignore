@@ -4,6 +4,11 @@ venv/
 ENV/
 env/
 
+# Environment credentials
+.env
+.env.*
+!.env.example
+
 # Byte-compiled / cache files
 __pycache__/
 *.py[cod]

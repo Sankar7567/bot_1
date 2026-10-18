@@ -1,12 +1,3 @@
 {
-  "timestamp": "2026-10-18T05:38:07Z",
-  "symbol": "BTC/USDT:USDT",
-  "direction": "SHORT",
-  "confidence": 0.6757,
-  "entry_price": 81668.4,
-  "stop_loss": 81715.5394,
-  "take_profit": 81526.9817,
-  "risk_pct": 3.0,
-  "suggested_position_size": 0.0122,
-  "status": "OPEN"
+  "status": "CLOSED"
 }

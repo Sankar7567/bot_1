@@ -20,9 +20,13 @@ import logging
 from typing import Optional, List
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 from data_pipeline import DataPipeline, sanitize_symbol_for_filename, desanitize_filename_to_symbol
 from features import FeatureEngineer
@@ -521,17 +525,68 @@ def execute(
         console.print(f"[bold cyan]Starting Continuous Execution Daemon (Interval: {poll_interval}s)...[/bold cyan]")
         engine.run_loop(poll_interval_sec=poll_interval, max_iterations=iterations)
     else:
-        console.print("[cyan]Executing single universe scan & execution cycle...[/cyan]")
-        res = engine.step()
+        total_syms = len(engine.symbols)
+        console.print(f"[cyan]Scanning universe of {total_syms} symbols for high-conviction setups...[/cyan]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeElapsedColumn(),
+            console=console
+        ) as progress:
+            scan_task = progress.add_task("[cyan]Evaluating ML indicators...", total=total_syms)
+
+            def progress_callback(completed: int, total: int, sym: str, cand: Optional[dict]):
+                progress.update(scan_task, completed=completed, description=f"[cyan]Scanning ({completed}/{total}) {sym}...")
+
+            res = engine.step(progress_callback=progress_callback)
+
+        # Candidate Leaderboard Table
+        leaderboard = getattr(engine, "latest_scan_leaderboard", [])
+        if leaderboard:
+            lb_table = Table(title="Global Universe ML Candidate Leaderboard (Ranked Descending)")
+            lb_table.add_column("Rank", justify="center", style="dim")
+            lb_table.add_column("Symbol", style="cyan")
+            lb_table.add_column("Dir", justify="center")
+            lb_table.add_column("ML Conf", justify="right", style="green")
+            lb_table.add_column("ATR (14)", justify="right")
+            lb_table.add_column("Price", justify="right")
+            lb_table.add_column("Pos Size", justify="right")
+            lb_table.add_column("Notional", justify="right")
+            lb_table.add_column("Min Notional", justify="right")
+            lb_table.add_column("Status", justify="center")
+
+            for rank, item in enumerate(leaderboard[:15], 1):
+                status_style = "bold green" if item["status"] == "SELECTED_AND_EXECUTED" else (
+                    "yellow" if "SKIPPED" in item["status"] else "dim"
+                )
+                dir_style = "bold green" if item["direction"] == "LONG" else "bold red"
+
+                lb_table.add_row(
+                    str(rank),
+                    item["symbol"],
+                    f"[{dir_style}]{item['direction']}[/{dir_style}]",
+                    f"{item['confidence']*100:.1f}%",
+                    f"${item['atr']:.4f}",
+                    f"${item['entry_price']:.4f}",
+                    str(item["position_size"]),
+                    f"${item['notional']:.2f}",
+                    f"${item['min_notional']:.2f}",
+                    f"[{status_style}]{item['status']}[/{status_style}]"
+                )
+            console.print(lb_table)
+
         if res:
-            console.print(f"[bold green]Trade Successfully Executed in {mode.upper()} Mode![/bold green]")
+            console.print(f"[bold green]Highest-Probability Valid Trade Executed in {engine.mode} Mode![/bold green]")
             console.print(json.dumps(res, indent=2))
         else:
             active = engine.get_active_trade()
             if active and active.get("status") == "OPEN":
-                console.print(f"[yellow]Active trade already in progress on {active.get('symbol')} ({active.get('direction')}). Global 1-trade rule active.[/yellow]")
+                console.print(f"[yellow]Active trade in progress on {active.get('symbol')} ({active.get('direction')}). Global 1-trade rule active.[/yellow]")
             else:
-                console.print("[yellow]Scan cycle finished. No symbol exceeded confidence threshold at this time.[/yellow]")
+                console.print("[yellow]Scan cycle finished. No trade was executed at this time.[/yellow]")
 
 
 @app.command()

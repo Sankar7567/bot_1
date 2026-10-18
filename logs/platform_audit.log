@@ -238,3 +238,92 @@
 {"timestamp": "2026-10-18T05:38:07.471894+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
 {"timestamp": "2026-10-18T05:38:09.716177+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
 {"timestamp": "2026-10-18T05:38:15.213448+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:39:06.746132+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for AVA/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:39:06Z", "symbol": "AVA/USDT:USDT", "direction": "SHORT", "confidence": 0.8322, "entry_price": 0.3973, "stop_loss": 0.4054, "take_profit": 0.3729, "risk_pct": 3.0, "suggested_position_size": 358.1073, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:39:21.901858+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:39:37.058022+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:39:52.214628+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:40:07.369741+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:40:22.524722+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:40:37.680501+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:40:52.836342+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:41:07.989633+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:41:23.145995+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:41:38.278707+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:41:53.456993+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:42:08.612715+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:42:23.769245+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+[2026-10-18T05:42:37.746377+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T05:42:37.752693+00:00] [INFO] Loaded existing model booster with 21 iterations.
+[2026-10-18T05:42:37.753305+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T05:42:38.074993+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 78 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 35%
+[2026-10-18T05:42:38.075119+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T05:42:38.075169+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T05:42:38.879424+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.8s | Features extracted: 1,000 rows est | Model trees updated: 93 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 80%
+[2026-10-18T05:42:38.879547+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T05:42:38.879751+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 31.
+{"timestamp": "2026-10-18T05:42:38.891144+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:42:38.909716+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on AVA/USDT:USDT. Global scan locked.", "data": {}}
+{"timestamp": "2026-10-18T05:42:43.743658+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:42:43Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.6653, "entry_price": 81688.3, "stop_loss": 81732.9065, "take_profit": 81554.4806, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:42:43.784285+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:42:49.207230+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+[2026-10-18T05:59:22.008485+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T05:59:22.013616+00:00] [INFO] Loaded existing model booster with 11 iterations.
+[2026-10-18T05:59:22.017813+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T05:59:22.351676+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 48 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 46%
+[2026-10-18T05:59:22.351818+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T05:59:22.351881+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T05:59:22.716165+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.4s | Features extracted: 1,000 rows est | Model trees updated: 63 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 58%
+[2026-10-18T05:59:22.716303+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T05:59:22.716491+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 21.
+{"timestamp": "2026-10-18T05:59:22.730977+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T05:59:26.237620+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T05:59:26Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.6667, "entry_price": 81700.1, "stop_loss": 81749.6214, "take_profit": 81551.5359, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:59:26.271486+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:59:30.699962+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:59:30.748757+00:00", "event_type": "CREDENTIAL_FALLBACK", "message": "[WARN] Valid live credentials not found. Falling back to PAPER mode.", "data": {}}
+{"timestamp": "2026-10-18T05:59:30.749336+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:59:30.777225+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:59:30.781037+00:00", "event_type": "ORDER_EXECUTED", "message": "Executed PAPER LONG on TINY/USDT:USDT (20x Leverage, 5% Risk: $5.00)", "data": {"timestamp": "2026-10-18T05:59:30.780046+00:00", "symbol": "TINY/USDT:USDT", "direction": "LONG", "confidence": 0.85, "entry_price": 0.001, "stop_loss": 0.0005, "take_profit": 0.0025, "risk_pct": 5.0, "dollar_risk": 5.0, "leverage": 20, "suggested_position_size": 10000.0, "mode": "PAPER", "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T05:59:30.804437+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T05:59:30.807641+00:00", "event_type": "ORDER_EXECUTED", "message": "Executed PAPER LONG on SYM_A (20x Leverage, 5% Risk: $5.00)", "data": {"timestamp": "2026-10-18T05:59:30.806864+00:00", "symbol": "SYM_A", "direction": "LONG", "confidence": 0.82, "entry_price": 50.0, "stop_loss": 49.5, "take_profit": 51.5, "risk_pct": 5.0, "dollar_risk": 5.0, "leverage": 20, "suggested_position_size": 10.0, "mode": "PAPER", "status": "SIGNAL_GENERATED"}}
+[2026-10-18T06:01:01.748751+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T06:01:01.751489+00:00] [INFO] Loaded existing model booster with 9 iterations.
+[2026-10-18T06:01:01.751905+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T06:01:02.119834+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.4s | Features extracted: 1,000 rows est | Model trees updated: 42 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 46%
+[2026-10-18T06:01:02.119957+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T06:01:02.120006+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T06:01:02.399888+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 57 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 48%
+[2026-10-18T06:01:02.400003+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T06:01:02.400147+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 19.
+{"timestamp": "2026-10-18T06:01:02.415460+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T06:01:05.974132+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T06:01:05Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.7188, "entry_price": 81705.3, "stop_loss": 81751.6448, "take_profit": 81566.2657, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T06:01:06.017512+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:01:11.452495+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:01:11.501669+00:00", "event_type": "CREDENTIAL_FALLBACK", "message": "[WARN] Valid live credentials not found. Falling back to PAPER mode.", "data": {}}
+{"timestamp": "2026-10-18T06:01:11.502495+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:01:11.529848+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:01:11.532611+00:00", "event_type": "SKIPPED_MIN_NOTIONAL", "message": "Symbol TINY/USDT:USDT position size $1.00 below exchange minNotional $5.00. Evaluating next top setup.", "data": {"symbol": "TINY/USDT:USDT", "notional": 0.9999500000000001, "min_notional": 5.0}}
+{"timestamp": "2026-10-18T06:01:11.533980+00:00", "event_type": "ORDER_EXECUTED", "message": "Executed PAPER LONG on VALID/USDT:USDT (20x Leverage, 5% Risk: $5.00)", "data": {"timestamp": "2026-10-18T06:01:11.533000+00:00", "symbol": "VALID/USDT:USDT", "direction": "LONG", "confidence": 0.65, "entry_price": 100.0, "stop_loss": 99.0, "take_profit": 103.0, "risk_pct": 5.0, "dollar_risk": 4.9998, "leverage": 20, "suggested_position_size": 4.999, "mode": "PAPER", "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T06:01:11.560542+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:01:11.564164+00:00", "event_type": "ORDER_EXECUTED", "message": "Executed PAPER LONG on SYM_A (20x Leverage, 5% Risk: $5.00)", "data": {"timestamp": "2026-10-18T06:01:11.563128+00:00", "symbol": "SYM_A", "direction": "LONG", "confidence": 0.82, "entry_price": 50.0, "stop_loss": 49.5, "take_profit": 51.5, "risk_pct": 5.0, "dollar_risk": 5.0, "leverage": 20, "suggested_position_size": 10.0, "mode": "PAPER", "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T06:01:35.126458+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:02:12.605406+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+[2026-10-18T06:02:18.830687+00:00] [INFO] Initiating accelerated rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T06:02:18.836421+00:00] [INFO] Loaded existing model booster with 21 iterations.
+[2026-10-18T06:02:18.836807+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T06:02:19.169095+00:00] [INFO] [Batch 1/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 78 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 45%
+[2026-10-18T06:02:19.169211+00:00] [INFO] Purged 4 raw files for batch 1. Disk usage: 0.003 GB
+[2026-10-18T06:02:19.169261+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T06:02:19.444675+00:00] [INFO] [Batch 2/2] Processed 1 symbols in 0.3s | Features extracted: 1,000 rows est | Model trees updated: 93 total trees | Current Disk Usage: 0.0 GB / 18.0 GB | CPU Load: 45%
+[2026-10-18T06:02:19.444805+00:00] [INFO] Purged 4 raw files for batch 2. Disk usage: 0.000 GB
+[2026-10-18T06:02:19.444996+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 31.
+{"timestamp": "2026-10-18T06:02:19.459164+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T06:02:23.282023+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT (SHORT)", "data": {"timestamp": "2026-10-18T06:02:23Z", "symbol": "BTC/USDT:USDT", "direction": "SHORT", "confidence": 0.7106, "entry_price": 81740.2, "stop_loss": 81789.3805, "take_profit": 81592.6585, "risk_pct": 3.0, "suggested_position_size": 0.0122, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T06:02:23.319653+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:02:27.634916+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:02:27.683265+00:00", "event_type": "CREDENTIAL_FALLBACK", "message": "[WARN] Valid live credentials not found. Falling back to PAPER mode.", "data": {}}
+{"timestamp": "2026-10-18T06:02:27.683729+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:02:27.703312+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:02:27.705832+00:00", "event_type": "SKIPPED_MIN_NOTIONAL", "message": "Symbol TINY/USDT:USDT position size $1.00 below exchange minNotional $5.00. Evaluating next top setup.", "data": {"symbol": "TINY/USDT:USDT", "notional": 1.0, "min_notional": 5.0}}
+{"timestamp": "2026-10-18T06:02:27.707097+00:00", "event_type": "ORDER_EXECUTED", "message": "Executed PAPER LONG on VALID/USDT:USDT (20x Leverage, 5% Risk: $5.00)", "data": {"timestamp": "2026-10-18T06:02:27.706148+00:00", "symbol": "VALID/USDT:USDT", "direction": "LONG", "confidence": 0.65, "entry_price": 100.0, "stop_loss": 99.0, "take_profit": 103.0, "risk_pct": 5.0, "dollar_risk": 5.0, "leverage": 20, "suggested_position_size": 5.0, "mode": "PAPER", "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T06:02:27.728653+00:00", "event_type": "STARTUP_SWEEP", "message": "Executing startup sweep in PAPER mode...", "data": {}}
+{"timestamp": "2026-10-18T06:02:27.734213+00:00", "event_type": "ORDER_EXECUTED", "message": "Executed PAPER LONG on SYM_A (20x Leverage, 5% Risk: $5.00)", "data": {"timestamp": "2026-10-18T06:02:27.733082+00:00", "symbol": "SYM_A", "direction": "LONG", "confidence": 0.82, "entry_price": 50.0, "stop_loss": 49.5, "take_profit": 51.5, "risk_pct": 5.0, "dollar_risk": 5.0, "leverage": 20, "suggested_position_size": 10.0, "mode": "PAPER", "status": "SIGNAL_GENERATED"}}

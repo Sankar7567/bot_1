@@ -27,10 +27,13 @@ import json
 import time
 import math
 import logging
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable
 from pathlib import Path
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import ccxt
 import pandas as pd
@@ -48,6 +51,30 @@ LOGS_DIR = Path("logs")
 PAPER_WALLET_PATH = SIGNALS_DIR / "paper_wallet.json"
 SIGNALS_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def validate_binance_credentials(api_key: Optional[str], api_secret: Optional[str]) -> bool:
+    """Validates that Binance API credentials are non-empty and not dummy placeholders."""
+    if not api_key or not api_secret:
+        return False
+    k = api_key.strip()
+    s = api_secret.strip()
+    if not k or not s:
+        return False
+    dummy_markers = {
+        "your_binance_api_key_here",
+        "your_binance_api_secret_here",
+        "none",
+        "placeholder",
+        "dummy",
+        "test",
+        "xxx"
+    }
+    if k.lower() in dummy_markers or s.lower() in dummy_markers:
+        return False
+    if len(k) < 16 or len(s) < 16:
+        return False
+    return True
 
 
 class PaperWallet:
@@ -501,18 +528,47 @@ class DualModeExecutionEngine:
         self.fe = FeatureEngineer(self.pipeline)
         self.trainer = ModelTrainer(pipeline=self.pipeline)
         self.trainer.load_model()
+        self.latest_scan_leaderboard: List[Dict[str, Any]] = []
 
         # Initialize Mode Adapter
         self.live_adapter: Optional[LiveExchangeAdapter] = None
         self.paper_wallet: Optional[PaperWallet] = None
 
         if self.mode == "LIVE":
-            key = api_key or os.getenv("BINANCE_API_KEY")
-            sec = api_secret or os.getenv("BINANCE_API_SECRET")
-            if not key or not sec:
-                raise ValueError("LIVE mode requires valid BINANCE_API_KEY and BINANCE_API_SECRET.")
-            self.live_adapter = LiveExchangeAdapter(api_key=key, api_secret=sec)
-            logger.info("Initialized LIVE Binance Futures Execution Adapter.")
+            key = (api_key or os.getenv("BINANCE_API_KEY", "")).strip()
+            sec = (api_secret or os.getenv("BINANCE_API_SECRET", "")).strip()
+            
+            if not validate_binance_credentials(key, sec):
+                logger.warning("[WARN] Valid live credentials not found. Falling back to PAPER mode.")
+                append_audit_log(
+                    "CREDENTIAL_FALLBACK",
+                    "[WARN] Valid live credentials not found. Falling back to PAPER mode.",
+                    level="WARNING"
+                )
+                self.mode = "PAPER"
+                self.paper_wallet = PaperWallet(
+                    initial_equity=initial_paper_equity,
+                    wallet_path=wallet_path or PAPER_WALLET_PATH
+                )
+                logger.info(f"Initialized PAPER Trading Simulator (Starting Balance: ${self.paper_wallet.equity:.2f}).")
+            else:
+                try:
+                    self.live_adapter = LiveExchangeAdapter(api_key=key, api_secret=sec)
+                    self.live_adapter.fetch_equity_and_balance()
+                    logger.info("Initialized LIVE Binance Futures Execution Adapter.")
+                except Exception as e:
+                    logger.warning(f"[WARN] Valid live credentials not found ({e}). Falling back to PAPER mode.")
+                    append_audit_log(
+                        "CREDENTIAL_FALLBACK",
+                        f"[WARN] Valid live credentials not found ({e}). Falling back to PAPER mode.",
+                        level="WARNING"
+                    )
+                    self.mode = "PAPER"
+                    self.paper_wallet = PaperWallet(
+                        initial_equity=initial_paper_equity,
+                        wallet_path=wallet_path or PAPER_WALLET_PATH
+                    )
+                    logger.info(f"Initialized PAPER Trading Simulator (Starting Balance: ${self.paper_wallet.equity:.2f}).")
         else:
             self.paper_wallet = PaperWallet(
                 initial_equity=initial_paper_equity,
@@ -652,6 +708,57 @@ class DualModeExecutionEngine:
         )
         return exit_event
 
+    def get_symbol_limits(self, symbol: str) -> Dict[str, Any]:
+        """
+        Queries Binance exchange limits for minNotional, minQty, and precision.
+        """
+        try:
+            market = self.pipeline.exchange.market(symbol)
+            limits = market.get("limits", {})
+            cost_min = limits.get("cost", {}).get("min")
+            amount_min = limits.get("amount", {}).get("min")
+            precision = market.get("precision", {})
+            amount_step = precision.get("amount")
+            price_step = precision.get("price")
+
+            min_notional = float(cost_min) if cost_min is not None else 5.0
+            min_qty = float(amount_min) if amount_min is not None else 0.001
+            step_size = float(amount_step) if amount_step is not None else 0.001
+            tick_size = float(price_step) if price_step is not None else 0.01
+
+            return {
+                "min_notional": min_notional,
+                "min_qty": min_qty,
+                "step_size": step_size,
+                "tick_size": tick_size
+            }
+        except Exception:
+            return {
+                "min_notional": 5.0,
+                "min_qty": 0.001,
+                "step_size": 0.001,
+                "tick_size": 0.01
+            }
+
+    def get_symbol_max_leverage(self, symbol: str) -> int:
+        """Determines maximum leverage for symbol from exchange market rules."""
+        if self.mode == "LIVE" and self.live_adapter:
+            return self.live_adapter.get_symbol_max_leverage(symbol)
+        try:
+            market = self.pipeline.exchange.market(symbol)
+            max_lev = market.get("limits", {}).get("leverage", {}).get("max")
+            if max_lev:
+                return int(max_lev)
+        except Exception:
+            pass
+        if "BTC" in symbol:
+            return 125
+        elif "ETH" in symbol:
+            return 100
+        elif any(k in symbol for k in ["SOL", "BNB", "XRP"]):
+            return 50
+        return 20
+
     def calculate_5pct_risk_position(
         self,
         symbol: str,
@@ -694,16 +801,26 @@ class DualModeExecutionEngine:
         if target_size > max_allowed_coins:
             target_size = max_allowed_coins
 
-        # Format size to 4 decimal places
+        # Format size according to precision / step size
+        limits = self.get_symbol_limits(symbol)
+        step = limits["step_size"]
+        if step > 0:
+            target_size = math.floor(target_size / step) * step
+            # Avoid precision artifacts
+            decimals = max(0, -int(math.floor(math.log10(step)))) if step < 1 else 0
+            target_size = round(target_size, decimals)
+
         target_size = max(0.0001, round(target_size, 4))
         return target_size, stop_loss, take_profit, dollar_risk
 
     def evaluate_symbol_for_entry(self, sym: str) -> Optional[Dict[str, Any]]:
-        """Computes live features and evaluates LightGBM inference for a symbol."""
+        """
+        Computes live features and evaluates LightGBM inference for a symbol.
+        Driven purely by normalized technical features without any hardcoded symbol bias.
+        """
         try:
             df_base = self.pipeline.load_symbol_data(self.base_timeframe, sym)
             if df_base.empty or len(df_base) < 30:
-                # Try fetching recent candles live via CCXT
                 candles = self.pipeline.exchange.fetch_ohlcv(sym, self.base_timeframe, limit=100)
                 if candles:
                     df_base = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -748,7 +865,7 @@ class DualModeExecutionEngine:
             if merged.empty:
                 return None
 
-            # Model inference
+            # Model inference: purely data-driven without symbol favoritism
             if self.trainer.booster is not None or self.trainer.model is not None:
                 probs = self.trainer.predict_probabilities(merged)
                 prob_tp = float(probs[-1, 2])
@@ -776,7 +893,15 @@ class DualModeExecutionEngine:
             logger.debug(f"Evaluation error for {sym}: {e}")
             return None
 
-    def execute_trade(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_trade(
+        self,
+        candidate: Dict[str, Any],
+        pos_size: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        tp_price: Optional[float] = None,
+        dollar_risk: Optional[float] = None,
+        max_lev: Optional[int] = None
+    ) -> Dict[str, Any]:
         """
         Executes a high-conviction trade in either PAPER or LIVE mode.
         - Sets ISOLATED margin mode and symbol's max leverage.
@@ -795,28 +920,21 @@ class DualModeExecutionEngine:
             atr_val = entry_price * 0.01
 
         # 1. Determine Symbol Max Leverage
-        if self.mode == "LIVE" and self.live_adapter:
-            max_lev = self.live_adapter.get_symbol_max_leverage(sym)
-            self.live_adapter.configure_symbol_margin_and_leverage(sym, max_lev)
-        else:
-            # Paper mode leverage simulation based on liquidity tiers
-            if "BTC" in sym:
-                max_lev = 125
-            elif "ETH" in sym:
-                max_lev = 100
-            elif any(k in sym for k in ["SOL", "BNB", "XRP"]):
-                max_lev = 50
-            else:
-                max_lev = 20
+        if max_lev is None:
+            max_lev = self.get_symbol_max_leverage(sym)
 
-        # 2. Derive 5% Account Risk Position Sizing
-        pos_size, sl_price, tp_price, dollar_risk = self.calculate_5pct_risk_position(
-            symbol=sym,
-            entry_price=entry_price,
-            atr_val=atr_val,
-            direction=direction,
-            max_leverage=max_lev
-        )
+        if self.mode == "LIVE" and self.live_adapter:
+            self.live_adapter.configure_symbol_margin_and_leverage(sym, max_lev)
+
+        # 2. Derive 5% Account Risk Position Sizing if not precomputed
+        if pos_size is None or sl_price is None or tp_price is None or dollar_risk is None:
+            pos_size, sl_price, tp_price, dollar_risk = self.calculate_5pct_risk_position(
+                symbol=sym,
+                entry_price=entry_price,
+                atr_val=atr_val,
+                direction=direction,
+                max_leverage=max_lev
+            )
 
         now_iso = datetime.now(timezone.utc).isoformat()
         signal_payload = {
@@ -880,13 +998,19 @@ class DualModeExecutionEngine:
         )
         return signal_payload
 
-    def step(self) -> Optional[Dict[str, Any]]:
+    def step(
+        self,
+        progress_callback: Optional[Callable[[int, int, str, Optional[Dict[str, Any]]], None]] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Executes a single evaluation cycle:
         1. Checks active trade for exit (TP/SL). If hit, sweeps orphan orders.
         2. If active trade in progress, locks global universe scan (1-trade-at-a-time).
-        3. If no active trade, evaluates universe for highest-conviction setup.
-        4. If found, executes trade with max leverage & 5% risk calculation.
+        3. Global Scan across symbols: pure ML prediction probabilities.
+        4. Global Ranking: ranks candidate setups strictly by raw ML probability in descending order.
+        5. Sub-Minimum Trade Skipping:
+           If 5% risk sizing yields notional < minNotional or size < minQty, emits log and
+           evaluates the next top candidate in the queue until a valid trade executes.
         """
         # 1. Check Active Trade
         active_trade = self.get_active_trade()
@@ -898,25 +1022,120 @@ class DualModeExecutionEngine:
 
         # 2. Universe Scan
         target_symbols = self.symbols
-        best_cand = None
-        best_conf = -1.0
+        total_syms = len(target_symbols)
+        evaluated_candidates: List[Dict[str, Any]] = []
 
-        max_workers = min(10, max(2, len(target_symbols)))
+        max_workers = min(12, max(2, total_syms))
+        completed_count = 0
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_sym = {executor.submit(self.evaluate_symbol_for_entry, s): s for s in target_symbols}
             for fut in as_completed(future_to_sym):
-                cand = fut.result()
-                if cand is not None:
-                    if cand["confidence"] >= self.confidence_threshold and cand["confidence"] > best_conf:
-                        best_conf = cand["confidence"]
-                        best_cand = cand
+                sym = future_to_sym[fut]
+                completed_count += 1
+                try:
+                    cand = fut.result()
+                    if cand is not None:
+                        evaluated_candidates.append(cand)
+                    if progress_callback:
+                        progress_callback(completed_count, total_syms, sym, cand)
+                except Exception as e:
+                    logger.debug(f"Scan worker error on {sym}: {e}")
+                    if progress_callback:
+                        progress_callback(completed_count, total_syms, sym, None)
 
-        if best_cand is None:
-            logger.debug("No setup met the confidence threshold.")
+        if not evaluated_candidates:
+            logger.debug("No symbols could be evaluated.")
+            self.latest_scan_leaderboard = []
             return None
 
-        # 3. High-Conviction Setup Found -> Execute
-        return self.execute_trade(best_cand)
+        # 3. Pure ML Probability Global Ranking (Strict Descending Order)
+        ranked_candidates = sorted(evaluated_candidates, key=lambda c: c["confidence"], reverse=True)
+
+        leaderboard: List[Dict[str, Any]] = []
+        executed_payload: Optional[Dict[str, Any]] = None
+
+        # 4. Iterate Candidates & Enforce Dynamic Symbol Limits
+        for cand in ranked_candidates:
+            sym = cand["symbol"]
+            conf = cand["confidence"]
+            dir_ = cand["direction"]
+            bar = cand["bar"]
+            entry_price = float(bar["close"])
+            atr_val = float(bar.get("atr_14", entry_price * 0.01))
+            if atr_val <= 0 or np.isnan(atr_val):
+                atr_val = entry_price * 0.01
+
+            max_lev = self.get_symbol_max_leverage(sym)
+            limits = self.get_symbol_limits(sym)
+
+            pos_size, sl_price, tp_price, dollar_risk = self.calculate_5pct_risk_position(
+                symbol=sym,
+                entry_price=entry_price,
+                atr_val=atr_val,
+                direction=dir_,
+                max_leverage=max_lev
+            )
+            notional = pos_size * entry_price
+
+            item_status = "PENDING"
+
+            if conf < self.confidence_threshold:
+                item_status = "BELOW_THRESHOLD"
+            elif executed_payload is not None:
+                item_status = "VALID_SETUP_QUEUE"
+            else:
+                # Sub-minimum trade inspection
+                if notional < limits["min_notional"]:
+                    item_status = "SKIPPED_MIN_NOTIONAL"
+                    logger.info(
+                        f"[SKIPPED_MIN_NOTIONAL] Symbol {sym} position size ${notional:.2f} "
+                        f"below exchange minNotional ${limits['min_notional']:.2f}. Evaluating next top setup."
+                    )
+                    append_audit_log(
+                        "SKIPPED_MIN_NOTIONAL",
+                        f"Symbol {sym} position size ${notional:.2f} below exchange minNotional ${limits['min_notional']:.2f}. Evaluating next top setup.",
+                        {"symbol": sym, "notional": notional, "min_notional": limits["min_notional"]}
+                    )
+                elif pos_size < limits["min_qty"]:
+                    item_status = "SKIPPED_MIN_QTY"
+                    logger.info(
+                        f"[SKIPPED_MIN_QTY] Symbol {sym} position size {pos_size} "
+                        f"below exchange minQty {limits['min_qty']}. Evaluating next top setup."
+                    )
+                    append_audit_log(
+                        "SKIPPED_MIN_QTY",
+                        f"Symbol {sym} position size {pos_size} below exchange minQty {limits['min_qty']}. Evaluating next top setup.",
+                        {"symbol": sym, "pos_size": pos_size, "min_qty": limits["min_qty"]}
+                    )
+                else:
+                    # Valid highest-probability trade found! Execute!
+                    item_status = "SELECTED_AND_EXECUTED"
+                    executed_payload = self.execute_trade(
+                        candidate=cand,
+                        pos_size=pos_size,
+                        sl_price=sl_price,
+                        tp_price=tp_price,
+                        dollar_risk=dollar_risk,
+                        max_lev=max_lev
+                    )
+
+            leaderboard.append({
+                "symbol": sym,
+                "direction": dir_,
+                "confidence": round(conf, 4),
+                "atr": round(atr_val, 4),
+                "entry_price": round(entry_price, 4),
+                "position_size": pos_size,
+                "notional": round(notional, 2),
+                "leverage": max_lev,
+                "min_notional": limits["min_notional"],
+                "min_qty": limits["min_qty"],
+                "status": item_status
+            })
+
+        self.latest_scan_leaderboard = leaderboard
+        return executed_payload
 
     def run_loop(self, poll_interval_sec: int = 10, max_iterations: Optional[int] = None) -> None:
         """Runs the execution engine continuously in a polling loop."""

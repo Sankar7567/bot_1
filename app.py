@@ -18,6 +18,9 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -213,28 +216,43 @@ with tab_execution:
 
     with act_col1:
         if st.button("🚀 Run Execution Cycle (Scan & Enter High-Conviction Setup)", type="primary", width="stretch"):
-            with st.spinner(f"Running execution cycle in {exec_mode} mode..."):
-                try:
-                    engine = DualModeExecutionEngine(
-                        mode=exec_mode,
-                        api_key=api_key,
-                        api_secret=api_secret,
-                        risk_pct=risk_pct_val,
-                        confidence_threshold=confidence_threshold,
-                        base_timeframe=timeframe,
-                        symbols=symbol_choices
-                    )
-                    trade_res = engine.step()
-                    if trade_res:
-                        st.success(f"Executed trade on {trade_res['symbol']} ({trade_res['direction']}) with {trade_res.get('leverage')}x Leverage!")
+            progress_slot = st.empty()
+            status_slot = st.empty()
+            prog_bar = progress_slot.progress(0.0)
+
+            def ui_progress_callback(completed: int, total: int, sym: str, cand: Optional[dict]):
+                pct = min(1.0, completed / max(1, total))
+                prog_bar.progress(pct)
+                status_slot.caption(f"Scanning ({completed}/{total}) {sym}...")
+
+            try:
+                engine = DualModeExecutionEngine(
+                    mode=exec_mode,
+                    api_key=api_key,
+                    api_secret=api_secret,
+                    risk_pct=risk_pct_val,
+                    confidence_threshold=confidence_threshold,
+                    base_timeframe=timeframe,
+                    symbols=symbol_choices
+                )
+                trade_res = engine.step(progress_callback=ui_progress_callback)
+                progress_slot.empty()
+                status_slot.empty()
+
+                if trade_res:
+                    st.success(f"Executed trade on {trade_res['symbol']} ({trade_res['direction']}) with {trade_res.get('leverage')}x Leverage!")
+                else:
+                    active = engine.get_active_trade()
+                    if active and active.get("status") == "OPEN":
+                        st.info(f"Active trade already open on {active.get('symbol')}. Global 1-trade rule enforced.")
                     else:
-                        active = engine.get_active_trade()
-                        if active and active.get("status") == "OPEN":
-                            st.info(f"Active trade already open on {active.get('symbol')}. Global 1-trade rule enforced.")
-                        else:
-                            st.info("Scan completed. No setup exceeded the confidence threshold.")
-                except Exception as e:
-                    st.error(f"Execution Error: {e}")
+                        st.info("Scan completed. Evaluated all candidates against risk & exchange limits.")
+
+                st.session_state["latest_execution_leaderboard"] = getattr(engine, "latest_scan_leaderboard", [])
+            except Exception as e:
+                progress_slot.empty()
+                status_slot.empty()
+                st.error(f"Execution Error: {e}")
 
     with act_col2:
         if st.button("🧹 Sweep Orphan Orders", width="stretch"):
@@ -320,6 +338,13 @@ with tab_execution:
             st.info("Live bracket orders are placed directly on Binance Futures with `reduceOnly=True`.")
         else:
             st.info("No active bracket orders.")
+
+    # Candidate Ranking Leaderboard
+    latest_lb = st.session_state.get("latest_execution_leaderboard", [])
+    if latest_lb:
+        st.markdown("#### 🏆 Pure ML Global Candidate Leaderboard (Ranked Descending)")
+        lb_df = pd.DataFrame(latest_lb)
+        st.dataframe(lb_df, width="stretch")
 
     # Trade History Table
     st.markdown("#### 📜 Recent Trade Execution History")
