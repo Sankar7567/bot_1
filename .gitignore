@@ -1,0 +1,27 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Test & scratch temporary directories
+test_data/
+test_models/
+test_batch_data/
+
+# Large local raw data parquet cache (preserve directories with .gitkeep)
+data/raw/*/*.parquet
+data/features/*/*.parquet
+
+# Streamlit run cache
+.streamlit/
+
+# OS specific files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,40 @@
+{"timestamp": "2026-10-18T02:14:14.656877+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 2 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T02:14:19.230930+00:00", "event_type": "NO_SIGNAL", "message": "No symbol exceeded the confidence threshold.", "data": {}}
+{"timestamp": "2026-10-18T02:14:25.781324+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T02:14:30.723939+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT", "data": {"timestamp": "2026-10-18T02:14:30Z", "symbol": "BTC/USDT:USDT", "direction": "LONG", "confidence": 0.2407, "entry_price": 192437.9967, "stop_loss": 191511.4309, "take_profit": 195217.6941, "risk_pct": 3.0, "suggested_position_size": 0.0032, "status": "SIGNAL_GENERATED"}}
+{"timestamp": "2026-10-18T02:15:50.967881+00:00", "event_type": "TRADE_CLOSED", "message": "Position closed on BTC/USDT:USDT: STOP_LOSS", "data": {"symbol": "BTC/USDT:USDT", "exit_reason": "STOP_LOSS", "exit_price": 191511.4309, "exit_time": "2026-10-18T02:15:00+00:00", "realized_pnl": -2.97, "new_equity": 97.03}}
+{"timestamp": "2026-10-18T02:15:50.968363+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 5 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T02:15:55.808786+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for XRP/USDT:USDT", "data": {"timestamp": "2026-10-18T02:15:55Z", "symbol": "XRP/USDT:USDT", "direction": "LONG", "confidence": 0.4303, "entry_price": 1.2947, "stop_loss": 1.2922, "take_profit": 1.3022, "risk_pct": 3.0, "suggested_position_size": 749.4786, "status": "SIGNAL_GENERATED"}}
+[2026-10-18T02:16:06.279867+00:00] [INFO] Initiating rolling-batch training for 4 symbols in 2 batches (Batch Size: 2, Storage Cap: 18.0 GB)
+[2026-10-18T02:16:06.303436+00:00] [INFO] Loaded existing model booster with 52 iterations.
+[2026-10-18T02:16:06.303612+00:00] [INFO] Processing Batch 1/2 (2 symbols)...
+[2026-10-18T02:16:06.645544+00:00] [INFO] Batch 1 assembled 16784 training samples.
+[2026-10-18T02:16:07.435211+00:00] [INFO] Batch 1/2 completed. Model iterations: 62. Purged 8 raw files. Current disk usage: 0.035 GB
+[2026-10-18T02:16:07.435364+00:00] [INFO] Processing Batch 2/2 (2 symbols)...
+[2026-10-18T02:16:07.764583+00:00] [INFO] Batch 2 assembled 16784 training samples.
+[2026-10-18T02:16:09.111316+00:00] [INFO] Batch 2/2 completed. Model iterations: 72. Purged 8 raw files. Current disk usage: 0.027 GB
+[2026-10-18T02:16:09.111465+00:00] [INFO] Rolling-batch training completed successfully for all 4 symbols. Final model iterations: 72.
+[2026-10-18T02:17:40.696549+00:00] [INFO] Initiating rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T02:17:40.700052+00:00] [INFO] Loaded existing model booster with 21 iterations.
+[2026-10-18T02:17:40.700185+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T02:17:40.847868+00:00] [INFO] Batch 1 assembled 8392 training samples.
+[2026-10-18T02:17:41.225117+00:00] [INFO] Batch 1/2 completed. Model iterations: 26. Purged 4 raw files. Current disk usage: 0.000 GB
+[2026-10-18T02:17:41.225263+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T02:17:41.400188+00:00] [INFO] Batch 2 assembled 8392 training samples.
+[2026-10-18T02:17:41.805154+00:00] [INFO] Batch 2/2 completed. Model iterations: 31. Purged 4 raw files. Current disk usage: 0.000 GB
+[2026-10-18T02:17:41.805304+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 31.
+{"timestamp": "2026-10-18T02:17:51.068196+00:00", "event_type": "SCAN_SKIPPED", "message": "Active trade in progress on XRP/USDT:USDT. Global scan locked.", "data": {}}
+[2026-10-18T02:18:10.810106+00:00] [INFO] Initiating rolling-batch training for 2 symbols in 2 batches (Batch Size: 1, Storage Cap: 18.0 GB)
+[2026-10-18T02:18:10.815461+00:00] [INFO] Loaded existing model booster with 1 iterations.
+[2026-10-18T02:18:10.816096+00:00] [INFO] Processing Batch 1/2 (1 symbols)...
+[2026-10-18T02:18:10.960766+00:00] [INFO] Batch 1 assembled 8392 training samples.
+[2026-10-18T02:18:11.158399+00:00] [INFO] Batch 1/2 completed. Model iterations: 6. Purged 4 raw files. Current disk usage: 0.000 GB
+[2026-10-18T02:18:11.158553+00:00] [INFO] Processing Batch 2/2 (1 symbols)...
+[2026-10-18T02:18:11.333387+00:00] [INFO] Batch 2 assembled 8392 training samples.
+[2026-10-18T02:18:11.502618+00:00] [INFO] Batch 2/2 completed. Model iterations: 11. Purged 4 raw files. Current disk usage: 0.000 GB
+[2026-10-18T02:18:11.502763+00:00] [INFO] Rolling-batch training completed successfully for all 2 symbols. Final model iterations: 11.
+{"timestamp": "2026-10-18T02:18:11.506417+00:00", "event_type": "SCAN_STARTED", "message": "Scanning 1 symbols for high-conviction setups...", "data": {}}
+{"timestamp": "2026-10-18T02:18:14.566771+00:00", "event_type": "SIGNAL_EMITTED", "message": "High-conviction signal emitted for BTC/USDT:USDT", "data": {"timestamp": "2026-10-18T02:18:14Z", "symbol": "BTC/USDT:USDT", "direction": "LONG", "confidence": 0.2171, "entry_price": 81618.0, "stop_loss": 81539.2001, "take_profit": 81854.3998, "risk_pct": 3.0, "suggested_position_size": 0.0123, "status": "SIGNAL_GENERATED"}}
+[2026-10-18T02:21:24.711637+00:00] [INFO] Initiating rolling-batch training for 500 symbols in 10 batches (Batch Size: 50, Storage Cap: 18.0 GB)
+[2026-10-18T02:21:24.729209+00:00] [INFO] Loaded existing model booster with 72 iterations.
+[2026-10-18T02:21:24.729427+00:00] [INFO] Processing Batch 1/10 (50 symbols)...
