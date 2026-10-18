@@ -47,7 +47,7 @@ app = typer.Typer(help="Binance Futures ML Research Platform CLI")
 @app.command()
 def rolling_train(
     batch_size: int = typer.Option(50, "--batch-size", "-b", help="Number of symbols per rolling batch"),
-    months: int = typer.Option(12, "--months", "-m", help="Months of history to ingest per batch"),
+    months: int = typer.Option(12, "--months", "-m", help="Months of history to ingest per batch (supports up to 60 months / 5 years)"),
     rounds_per_batch: int = typer.Option(40, "--rounds", "-r", help="LightGBM boosting rounds per batch"),
     max_storage_gb: float = typer.Option(18.0, "--max-storage-gb", help="Strict disk ceiling threshold in GB"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols list"),
@@ -234,7 +234,7 @@ def live_scan(
 
 @app.command()
 def download_data(
-    months: int = typer.Option(12, "--months", "-m", help="Months of historical data to download"),
+    months: int = typer.Option(12, "--months", "-m", help="Months of historical data to download (supports up to 60 months / 5 years)"),
     limit: int = typer.Option(500, "--limit", "-l", help="Maximum number of top liquid pairs to fetch"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated list of symbols"),
     timeframes: str = typer.Option("1m,5m,15m,1h", "--timeframes", "-tf", help="Comma-separated timeframes"),
@@ -729,6 +729,44 @@ def test_cleanup(
     else:
         console.print(f"[bold red]✗ LIVE TEST FAILED: {result.get('error') or 'Orphan orders detected'}[/bold red]")
         raise typer.Exit(code=1)
+
+
+@app.command(name="nuclear-reset")
+def nuclear_reset_cmd(
+    mode: str = typer.Option("LIVE", "--mode", "-m", help="Execution mode: 'LIVE' or 'PAPER'"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="Binance API Key (or loaded from .env)"),
+    secret: Optional[str] = typer.Option(None, "--secret", help="Binance API Secret (or loaded from .env)")
+):
+    """
+    Nuclear Reset: Aggressively and comprehensively obliterates ALL open orders
+    across the entire account with multi-pass verification.
+    """
+    console.print(f"[bold red]Executing Nuclear Reset in {mode} mode...[/bold red]")
+    try:
+        engine = DualModeExecutionEngine(
+            mode=mode,
+            api_key=api_key,
+            api_secret=secret
+        )
+    except Exception as e:
+        console.print(f"[bold red]Failed to initialize engine: {e}[/bold red]")
+        raise typer.Exit(code=1)
+
+    result = engine.nuclear_reset_all_orders(max_passes=5)
+
+    table = Table(title="Nuclear Reset Execution Summary")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+
+    table.add_row("Total Orders Cancelled", str(result.get("total_cancelled", 0)))
+    table.add_row("Passes Executed", str(result.get("passes_run", 0)))
+    table.add_row("Verified Empty (0 Open Orders)", "[bold green]YES[/bold green]" if result.get("verified_empty") else "[bold red]NO[/bold red]")
+
+    console.print(table)
+    if result.get("verified_empty"):
+        console.print("[bold green]✓ NUCLEAR RESET COMPLETE: Account is 100% clean with zero open orders![/bold green]")
+    else:
+        console.print("[bold yellow]! Nuclear reset finished with non-empty check. Review exchange manually.[/bold yellow]")
 
 
 if __name__ == "__main__":

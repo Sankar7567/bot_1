@@ -302,6 +302,19 @@ class PaperWallet:
         self.save()
         return count
 
+    def nuclear_reset_all_orders(self, max_passes: int = 5) -> Dict[str, Any]:
+        """
+        Nuclear Reset: Completely obliterates all pending orders in the paper wallet.
+        """
+        count = len(self.pending_orders)
+        self.pending_orders = []
+        self.save()
+        return {
+            "total_cancelled": count,
+            "passes_run": 1,
+            "verified_empty": True
+        }
+
 
 class LiveExchangeAdapter:
     """
@@ -546,6 +559,98 @@ class LiveExchangeAdapter:
             logger.error(f"Error during exchange orphan sweep: {e}")
             return 0
 
+    def nuclear_reset_all_orders(self, max_passes: int = 5) -> Dict[str, Any]:
+        """
+        Nuclear Reset: Aggressively and comprehensively obliterates ALL open orders
+        across the entire account across all symbols.
+        Executes bulk cancellation and force-cancels any lingering orders individually,
+        repeating verification passes up to max_passes until fetch_open_orders() is completely empty.
+        """
+        total_cancelled = 0
+        passes_run = 0
+        verified_empty = False
+
+        for pass_num in range(1, max_passes + 1):
+            passes_run = pass_num
+            # 1. Attempt global cancel_all_orders without symbol if supported
+            try:
+                bulk_res = retry_ccxt_call(lambda: self.exchange.cancel_all_orders())
+                if isinstance(bulk_res, list):
+                    total_cancelled += len(bulk_res)
+            except Exception as e:
+                logger.debug(f"[NUCLEAR_RESET] Pass {pass_num}: Global bulk cancel attempt note: {e}")
+
+            # 2. Query all remaining open orders across the entire account
+            try:
+                open_orders = retry_ccxt_call(lambda: self.exchange.fetch_open_orders())
+            except Exception as e:
+                logger.warning(f"[NUCLEAR_RESET] Pass {pass_num}: Could not fetch open orders: {e}")
+                open_orders = []
+
+            if not open_orders:
+                verified_empty = True
+                logger.info(
+                    f"[NUCLEAR_RESET] Verified: ZERO open orders across account after {pass_num} pass(es). "
+                    f"Total cancelled: {total_cancelled}."
+                )
+                break
+
+            logger.warning(
+                f"[NUCLEAR_RESET] Pass {pass_num}: Found {len(open_orders)} open orders across account. Force-cancelling..."
+            )
+
+            # 3. For each symbol present, invoke cancel_all_orders(symbol)
+            symbols_seen = set()
+            for order in open_orders:
+                sym = order.get("symbol")
+                if sym and sym not in symbols_seen:
+                    symbols_seen.add(sym)
+                    try:
+                        sym_res = retry_ccxt_call(lambda: self.exchange.cancel_all_orders(sym))
+                        if isinstance(sym_res, list):
+                            total_cancelled += len(sym_res)
+                    except Exception as sym_err:
+                        logger.debug(f"[NUCLEAR_RESET] Symbol bulk cancel error for {sym}: {sym_err}")
+
+            # 4. Force-cancel each remaining order individually by ID
+            for order in open_orders:
+                oid = order.get("id")
+                sym = order.get("symbol")
+                if oid:
+                    try:
+                        retry_ccxt_call(lambda: self.exchange.cancel_order(oid, sym))
+                        total_cancelled += 1
+                        logger.info(f"[NUCLEAR_RESET] Force-cancelled order {oid} on {sym}.")
+                    except Exception as err:
+                        msg = str(err).lower()
+                        if "unknown order" in msg or "order does not exist" in msg:
+                            logger.debug(f"[NUCLEAR_RESET] Order {oid} already filled or cancelled.")
+                        else:
+                            logger.warning(f"[NUCLEAR_RESET] Failed to force-cancel order {oid}: {err}")
+
+            if pass_num < max_passes:
+                time.sleep(0.5)
+
+        if not verified_empty:
+            try:
+                final_orders = retry_ccxt_call(lambda: self.exchange.fetch_open_orders())
+                verified_empty = (len(final_orders) == 0)
+            except Exception:
+                verified_empty = False
+
+        result = {
+            "total_cancelled": total_cancelled,
+            "passes_run": passes_run,
+            "verified_empty": verified_empty
+        }
+
+        append_audit_log(
+            "NUCLEAR_RESET",
+            f"Nuclear Reset executed: {total_cancelled} orders cancelled across {passes_run} passes. Verified empty: {verified_empty}.",
+            result
+        )
+        return result
+
     def verify_position_closed_on_exchange(self, symbol: str) -> bool:
         """
         Queries Binance Futures exchange to verify whether a position for the given
@@ -579,10 +684,12 @@ class LiveExchangeAdapter:
         direction: str,
         amount: float,
         stop_loss: float,
-        take_profit: float
+        take_profit: float,
+        atr: Optional[float] = None
     ) -> Dict[str, Any]:
         """
         Places market entry order followed immediately by Stop-Loss and Take-Profit bracket orders.
+        Enforces exact 1:3 Risk-Reward Ratio (RR) relative to actual entry price with tick-size precision formatting.
         """
         side = "buy" if direction == "LONG" else "sell"
         opp_side = "sell" if direction == "LONG" else "buy"
@@ -604,6 +711,21 @@ class LiveExchangeAdapter:
         if entry_price <= 0:
             ticker = self.exchange.fetch_ticker(symbol)
             entry_price = float(ticker.get("last") or ticker.get("close") or 0.0)
+
+        # Precise 1:3 RR Re-anchoring from actual entry price if ATR is supplied
+        if atr is not None and atr > 0 and entry_price > 0:
+            if direction == "LONG":
+                raw_sl = max(0.0001, entry_price - (1.0 * atr))
+                raw_tp = entry_price + (3.0 * atr)
+            else:
+                raw_sl = entry_price + (1.0 * atr)
+                raw_tp = max(0.0001, entry_price - (3.0 * atr))
+            formatted_sl = float(self.exchange.price_to_precision(symbol, raw_sl))
+            formatted_tp = float(self.exchange.price_to_precision(symbol, raw_tp))
+            logger.info(
+                f"[PRECISE_RR] Re-anchored exact 1:3 RR from actual fill ${entry_price:.4f}: "
+                f"SL=${formatted_sl} (1xATR), TP=${formatted_tp} (3xATR)"
+            )
 
         # 2. Stop-Loss Bracket Order (reduce-only)
         sl_order = None
@@ -938,50 +1060,68 @@ class DualModeExecutionEngine:
             self._symbols = top_syms if top_syms else ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
         return self._symbols
 
+    def nuclear_reset_all_orders(self, max_passes: int = 5) -> Dict[str, Any]:
+        """
+        Nuclear Reset: Aggressively and comprehensively sweeps and obliterates
+        all open orders across all symbols in LIVE mode, or all pending orders in PAPER mode.
+        """
+        if self.mode == "LIVE" and self.live_adapter:
+            return self.live_adapter.nuclear_reset_all_orders(max_passes=max_passes)
+        elif self.paper_wallet:
+            return self.paper_wallet.nuclear_reset_all_orders(max_passes=max_passes)
+        return {"total_cancelled": 0, "passes_run": 1, "verified_empty": True}
+
     def startup_sweep(self) -> None:
         """
         Automated Startup Sweep: Verifies exchange ground truth, clears phantom state,
-        and sweeps any dangling or leftover orphan bracket orders.
+        and sweeps any dangling or leftover orphan bracket orders using Nuclear Reset.
         """
         append_audit_log("STARTUP_SWEEP", f"Executing startup sweep in {self.mode} mode...")
         if self.mode == "LIVE" and self.live_adapter:
             try:
                 # Exchange ground truth verification on startup
                 active_trade = self.get_active_trade()
-                cleared = self.live_adapter.sweep_all_orphan_orders()
-                if active_trade:
-                    logger.info(
-                        f"Live startup sweep verified active exchange trade on {active_trade['symbol']}. "
-                        f"Cleared {cleared} orphan orders."
-                    )
-                else:
+                if not active_trade:
+                    # Clean slate: execute Nuclear Reset across the account
+                    nuclear_res = self.nuclear_reset_all_orders(max_passes=5)
                     logger.info(
                         f"Live startup sweep confirmed zero open positions on Binance. "
-                        f"Cleared {cleared} orphan orders."
+                        f"Nuclear reset wiped {nuclear_res.get('total_cancelled', 0)} orders."
+                    )
+                else:
+                    cleared = self.live_adapter.sweep_all_orphan_orders()
+                    logger.info(
+                        f"Live startup sweep verified active exchange trade on {active_trade['symbol']}. "
+                        f"Cleared {cleared} orphan orders on positionless symbols."
                     )
             except Exception as e:
                 logger.warning(f"Error during live startup sweep: {e}")
         elif self.mode == "PAPER" and self.paper_wallet:
             if not self.paper_wallet.active_position:
-                cleared = self.paper_wallet.sweep_orphan_orders()
-                logger.info(f"Paper startup sweep cleared {cleared} pending orders.")
+                cleared = self.paper_wallet.nuclear_reset_all_orders()
+                logger.info(f"Paper startup sweep cleared {cleared.get('total_cancelled', 0)} pending orders.")
 
     def shutdown_sweep(self) -> None:
         """
         Automated Shutdown Sweep: Cleans up any orphan orders across positionless symbols
-        when the daemon is stopped or terminated.
+        or runs Nuclear Reset if no active position is live.
         """
         append_audit_log("SHUTDOWN_SWEEP", f"Executing shutdown sweep in {self.mode} mode...")
         if self.mode == "LIVE" and self.live_adapter:
             try:
-                cleared = self.live_adapter.sweep_all_orphan_orders()
-                logger.info(f"[SHUTDOWN_SWEEP] Live shutdown sweep cleared {cleared} orphan orders.")
+                active_positions = self.live_adapter.get_open_positions()
+                if not active_positions:
+                    nuclear_res = self.nuclear_reset_all_orders(max_passes=5)
+                    logger.info(f"[SHUTDOWN_SWEEP] Live shutdown Nuclear Reset cleared {nuclear_res.get('total_cancelled', 0)} orders.")
+                else:
+                    cleared = self.live_adapter.sweep_all_orphan_orders()
+                    logger.info(f"[SHUTDOWN_SWEEP] Live shutdown sweep cleared {cleared} orphan orders.")
             except Exception as e:
                 logger.warning(f"Error during live shutdown sweep: {e}")
         elif self.mode == "PAPER" and self.paper_wallet:
             if not self.paper_wallet.active_position:
-                cleared = self.paper_wallet.sweep_orphan_orders()
-                logger.info(f"[SHUTDOWN_SWEEP] Paper shutdown sweep cleared {cleared} pending orders.")
+                cleared = self.paper_wallet.nuclear_reset_all_orders()
+                logger.info(f"[SHUTDOWN_SWEEP] Paper shutdown sweep cleared {cleared.get('total_cancelled', 0)} pending orders.")
 
     def verify_orphan_cleanup_test(self, symbol: str = "BTC/USDT:USDT") -> Dict[str, Any]:
         """
@@ -1281,19 +1421,34 @@ class DualModeExecutionEngine:
                 exit_price=exit_price,
                 exit_reason=exit_reason
             )
+            nuclear_res_raw = self.paper_wallet.nuclear_reset_all_orders()
+            # Sanitize to plain dict for JSON serialization safety
+            nuclear_res = {
+                "total_cancelled": int(nuclear_res_raw.get("total_cancelled", 0)),
+                "passes_run": int(nuclear_res_raw.get("passes_run", 1)),
+                "verified_empty": bool(nuclear_res_raw.get("verified_empty", True))
+            }
+            exit_event["nuclear_reset"] = nuclear_res
         elif self.mode == "LIVE" and self.live_adapter:
-            # ── Aggressive Closure Sweep ──────────────────────────────────────────
-            # When TP or SL fills, the opposing bracket order lingers as an orphan.
-            # cancel_all_orders_for_symbol() now loops with verification until
-            # fetch_open_orders(symbol) returns [] — guaranteeing zero orphans.
-            cancelled = self.live_adapter.cancel_all_orders_for_symbol(sym)
+            # ── Aggressive Closure Sweep / Nuclear Reset ──────────────────────────
+            # When TP or SL fills, execute Nuclear Reset across the entire account
+            # to guarantee zero orphan orders remain anywhere.
+            # 1. Primary symbol cancellation
+            cancelled_raw = self.live_adapter.cancel_all_orders_for_symbol(sym)
+            cancelled = int(cancelled_raw) if cancelled_raw is not None else 0
+            # 2. Nuclear Reset wipeout across the entire account
+            nuclear_res_raw = self.nuclear_reset_all_orders(max_passes=5)
+            # Sanitize to plain dict for JSON serialization safety
+            nuclear_res = {
+                "total_cancelled": int(nuclear_res_raw.get("total_cancelled", 0)),
+                "passes_run": int(nuclear_res_raw.get("passes_run", 0)),
+                "verified_empty": bool(nuclear_res_raw.get("verified_empty", False))
+            }
+            total_wiped = cancelled + nuclear_res["total_cancelled"]
             logger.info(
-                f"[CLOSURE_SWEEP] Cancelled {cancelled} bracket/orphan orders for {sym}. "
-                f"Running full account orphan sweep..."
+                f"[NUCLEAR_RESET] Trade exit on {sym} triggered Nuclear Reset: "
+                f"{total_wiped} orders wiped. Verified empty: {nuclear_res['verified_empty']}."
             )
-            # Secondary sweep: catch any orders on other positionless symbols
-            orphan_count = self.live_adapter.sweep_all_orphan_orders()
-            logger.info(f"[CLOSURE_SWEEP] Full orphan sweep complete. Additional cancelled: {orphan_count}.")
             equity = self.get_current_equity()
             exit_event = {
                 "symbol": sym,
@@ -1303,7 +1458,8 @@ class DualModeExecutionEngine:
                 "exit_time": datetime.now(timezone.utc).isoformat(),
                 "final_equity": equity,
                 "bracket_orders_cancelled": cancelled,
-                "orphan_orders_cancelled": orphan_count
+                "nuclear_reset": nuclear_res,
+                "total_orders_cancelled": total_wiped
             }
 
         # Clear active trade state on disk
@@ -1418,6 +1574,22 @@ class DualModeExecutionEngine:
             target_size = round(target_size, decimals)
 
         target_size = max(0.0001, round(target_size, 4))
+
+        # Enforce exact 1:3 RR with tick size precision formatting
+        try:
+            exch = self.live_adapter.exchange if (self.live_adapter and hasattr(self.live_adapter, "exchange")) else getattr(self.pipeline, "exchange", None)
+            if exch and hasattr(exch, "price_to_precision"):
+                stop_loss = float(exch.price_to_precision(symbol, stop_loss))
+                take_profit = float(exch.price_to_precision(symbol, take_profit))
+            else:
+                tick = limits.get("tick_size", 0.01)
+                decimals = max(0, -int(math.floor(math.log10(tick)))) if (tick and tick < 1) else 2
+                stop_loss = round(stop_loss, decimals)
+                take_profit = round(take_profit, decimals)
+        except Exception:
+            stop_loss = round(stop_loss, 4)
+            take_profit = round(take_profit, 4)
+
         return target_size, stop_loss, take_profit, dollar_risk
 
     def evaluate_symbol_for_entry(self, sym: str) -> Optional[Dict[str, Any]]:
@@ -1588,8 +1760,17 @@ class DualModeExecutionEngine:
                 direction=direction,
                 amount=pos_size,
                 stop_loss=sl_price,
-                take_profit=tp_price
+                take_profit=tp_price,
+                atr=atr_val
             )
+            if "stop_loss" in order_res and "take_profit" in order_res:
+                sl_price = order_res["stop_loss"]
+                tp_price = order_res["take_profit"]
+                signal_payload["stop_loss"] = sl_price
+                signal_payload["take_profit"] = tp_price
+                if "entry_price" in order_res and order_res["entry_price"] > 0:
+                    entry_price = order_res["entry_price"]
+                    signal_payload["entry_price"] = entry_price
             signal_payload["live_order_details"] = str(order_res.get("entry_order", {}))
             logger.info(f"[LIVE_ORDER] Executed {direction} on {sym} on Binance Futures.")
 

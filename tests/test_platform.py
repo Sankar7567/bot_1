@@ -802,7 +802,7 @@ class TestCryptoMLPlatform(unittest.TestCase):
         """
         Verify that during Phase 2 monitoring in LIVE mode, when exchange position
         contracts drop to 0, check_and_process_exit triggers immediate closure sweep,
-        cancels open orders, sets state to CLOSED, and returns the exit event.
+        calls nuclear_reset_all_orders, sets state to CLOSED, and returns the exit event.
         """
         from unittest.mock import MagicMock
         from execution import LiveExchangeAdapter
@@ -811,7 +811,12 @@ class TestCryptoMLPlatform(unittest.TestCase):
         # Position closed on exchange
         mock_adapter.get_open_positions.return_value = []
         mock_adapter.cancel_all_orders_for_symbol.return_value = 1
-        mock_adapter.sweep_all_orphan_orders.return_value = 1
+        # nuclear_reset_all_orders must return a plain JSON-serializable dict
+        mock_adapter.nuclear_reset_all_orders.return_value = {
+            "total_cancelled": 2,
+            "passes_run": 1,
+            "verified_empty": True
+        }
         mock_adapter.fetch_equity_and_balance.return_value = (150.0, 150.0)
 
         # verify_position_closed_on_exchange delegates to get_open_positions
@@ -844,8 +849,14 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
         self.assertIsNotNone(exit_event, "Must detect exit when exchange confirms position closed.")
         self.assertEqual(exit_event["symbol"], "JTO/USDT:USDT")
+        # Primary symbol cancel must still be called
         mock_adapter.cancel_all_orders_for_symbol.assert_called_once_with("JTO/USDT:USDT")
-        mock_adapter.sweep_all_orphan_orders.assert_called_once()
+        # Nuclear reset on live_adapter must be invoked (account-wide wipeout)
+        mock_adapter.nuclear_reset_all_orders.assert_called_once()
+        # Exit event must carry nuclear_reset summary dict (JSON-serializable)
+        self.assertIn("nuclear_reset", exit_event)
+        self.assertIsInstance(exit_event["nuclear_reset"], dict)
+        self.assertIn("verified_empty", exit_event["nuclear_reset"])
 
         # State file must be CLOSED
         with open(ACTIVE_TRADE_PATH, "r") as f:
@@ -1066,7 +1077,205 @@ class TestCryptoMLPlatform(unittest.TestCase):
         import shutil
         shutil.rmtree(test_models_dir, ignore_errors=True)
 
+    def test_32_five_year_data_pipeline_pagination(self):
+        """
+        Verify that CCXT pagination and historical ingestion logic supports up to
+        5 years (60 months / ~1800 days) of data, gracefully paginates across ranges,
+        and bidirectional cache backfilling works without dropping existing records.
+        """
+        from unittest.mock import MagicMock
+        from datetime import datetime, timezone
+
+        test_pipeline = DataPipeline(base_dir="test_data")
+        now_dt = datetime.now(timezone.utc)
+        now_ms = int(now_dt.timestamp() * 1000)
+        # 60 months lookback (~1800 days)
+        sixty_months_ms = 60 * 30 * 24 * 3600 * 1000
+        start_ms = now_ms - sixty_months_ms
+
+        self.assertGreaterEqual(now_ms - start_ms, 59 * 30 * 24 * 3600 * 1000,
+                                "Lookback calculation must cover at least 59 full 30-day months")
+
+        # Mock CCXT pagination with 2 sequential batches then empty
+        t0 = start_ms
+        t1 = t0 + (1000 * 3600 * 1000)  # 1000 1h candles
+
+        batch1 = [[t0 + (i * 3600 * 1000), 100.0, 105.0, 95.0, 102.0, 50.0] for i in range(5)]
+        batch2 = [[t1 + (i * 3600 * 1000), 102.0, 108.0, 99.0, 106.0, 60.0] for i in range(5)]
+
+        mock_fetch = MagicMock(side_effect=[batch1, batch2, []])
+        test_pipeline._fetch_ohlcv_with_backoff = mock_fetch
+
+        # Run fetch_ohlcv_incremental with empty cache
+        test_sym = "TEST_5Y/USDT:USDT"
+        df = test_pipeline.fetch_ohlcv_incremental(
+            symbol=test_sym,
+            timeframe="1h",
+            start_time_ms=start_ms,
+            end_time_ms=now_ms,
+            batch_limit=5
+        )
+
+        self.assertFalse(df.empty, "Resulting DataFrame must contain ingested candles")
+        self.assertEqual(len(df), 10, "Both 5-candle batches must be present in output")
+        self.assertEqual(mock_fetch.call_count, 3, "Pagination loop must terminate on empty response")
+
+    def test_33_nuclear_reset_wipeout(self):
+        """
+        Verify Nuclear Reset:
+        1. LiveExchangeAdapter.nuclear_reset_all_orders calls cancel_all_orders,
+           identifies lingering open orders across symbols, force-cancels each by ID,
+           and loops until fetch_open_orders returns [] within max_passes.
+        2. PaperWallet.nuclear_reset_all_orders clears pending_orders and saves.
+        3. DualModeExecutionEngine.nuclear_reset_all_orders delegates correctly.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        # 1. LiveExchangeAdapter multi-pass nuclear reset test
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.exchange = MagicMock()
+
+        # Pass 1: cancel_all_orders called -> returns 2 bulk cancelled
+        # fetch_open_orders returns 2 lingering orders
+        lingering = [
+            {"id": "order_btc_sl", "symbol": "BTC/USDT:USDT"},
+            {"id": "order_eth_tp", "symbol": "ETH/USDT:USDT"}
+        ]
+        # Pass 2: fetch_open_orders returns [] (verified empty)
+        adapter.exchange.cancel_all_orders.side_effect = [
+            [{"id": "b1"}, {"id": "b2"}],  # Global bulk pass 1
+            [],                            # Symbol BTC pass 1
+            [],                            # Symbol ETH pass 1
+            [],                            # Global bulk pass 2
+        ]
+        adapter.exchange.fetch_open_orders.side_effect = [lingering, []]
+        adapter.exchange.cancel_order.return_value = {"status": "canceled"}
+
+        res = adapter.nuclear_reset_all_orders(max_passes=5)
+
+        self.assertTrue(res["verified_empty"], "Nuclear reset must verify zero open orders remaining")
+        self.assertEqual(res["passes_run"], 2, "Nuclear reset should complete on pass 2")
+        self.assertGreaterEqual(res["total_cancelled"], 4, "Must cancel bulk plus 2 individual force-cancels")
+        # Ensure individual cancel was called for both lingering orders
+        adapter.exchange.cancel_order.assert_any_call("order_btc_sl", "BTC/USDT:USDT")
+        adapter.exchange.cancel_order.assert_any_call("order_eth_tp", "ETH/USDT:USDT")
+
+        # 2. PaperWallet nuclear reset test
+        wallet = PaperWallet.__new__(PaperWallet)
+        wallet.wallet_path = Path("test_data/test_paper_wallet.json")
+        wallet.pending_orders = [{"id": "paper_sl"}, {"id": "paper_tp"}]
+        wallet.save = MagicMock()
+
+        p_res = wallet.nuclear_reset_all_orders()
+        self.assertEqual(p_res["total_cancelled"], 2)
+        self.assertTrue(p_res["verified_empty"])
+        self.assertEqual(len(wallet.pending_orders), 0)
+        wallet.save.assert_called_once()
+
+        # 3. DualModeExecutionEngine nuclear reset test
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "LIVE"
+        engine.live_adapter = adapter
+        engine.paper_wallet = None
+
+        adapter.exchange.fetch_open_orders.side_effect = [[]]
+        adapter.exchange.cancel_all_orders.side_effect = [[]]
+        eng_res = engine.nuclear_reset_all_orders()
+        self.assertTrue(eng_res["verified_empty"])
+
+    def test_34_precise_1_to_3_rr_and_tick_precision(self):
+        """
+        Verify exact mathematical 1:3 Risk-Reward Ratio (SL = 1xATR, TP = 3xATR)
+        and strict tick-size precision formatting:
+        1. Exact ratio check: (TP - Entry) / (Entry - SL) == 3.0 for LONG, and
+           (Entry - TP) / (SL - Entry) == 3.0 for SHORT.
+        2. LiveExchangeAdapter.execute_bracket_trade re-anchors exact 1:3 RR from
+           actual filled entry price with price_to_precision.
+        3. DualModeExecutionEngine.calculate_5pct_risk_position formats prices to tick size.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        # 1. Exact mathematical ratio verification
+        entry_price = 50000.0
+        atr_val = 600.0
+
+        # LONG
+        long_sl = entry_price - (1.0 * atr_val)  # 49400.0
+        long_tp = entry_price + (3.0 * atr_val)  # 51800.0
+        self.assertAlmostEqual((long_tp - entry_price) / (entry_price - long_sl), 3.0, places=5)
+
+        # SHORT
+        short_sl = entry_price + (1.0 * atr_val)  # 50600.0
+        short_tp = entry_price - (3.0 * atr_val)  # 48200.0
+        self.assertAlmostEqual((entry_price - short_tp) / (short_sl - entry_price), 3.0, places=5)
+
+        # 2. LiveExchangeAdapter re-anchoring from actual fill price with tick precision
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.exchange = MagicMock()
+        adapter.exchange.market.return_value = {"precision": {"price": 0.01, "amount": 0.001}}
+        adapter.exchange.amount_to_precision.return_value = "0.050"
+        # price_to_precision rounds to 2 decimals
+        adapter.exchange.price_to_precision.side_effect = lambda sym, p: f"{p:.2f}"
+        # Simulate fill at 50123.45 (different from initial candidate entry)
+        adapter.exchange.create_order.return_value = {
+            "id": "entry_market_1",
+            "average": 50123.45,
+            "status": "closed"
+        }
+
+        trade_res = adapter.execute_bracket_trade(
+            symbol="BTC/USDT:USDT",
+            direction="LONG",
+            amount=0.05,
+            stop_loss=49000.0,
+            take_profit=53000.0,
+            atr=500.0
+        )
+
+        expected_entry = 50123.45
+        expected_sl = float(f"{expected_entry - 500.0:.2f}")
+        expected_tp = float(f"{expected_entry + 1500.0:.2f}")
+
+        self.assertEqual(trade_res["entry_price"], expected_entry)
+        self.assertEqual(trade_res["stop_loss"], expected_sl)
+        self.assertEqual(trade_res["take_profit"], expected_tp)
+        # Verify exact 1:3 ratio on re-anchored prices
+        rr_ratio = (trade_res["take_profit"] - trade_res["entry_price"]) / (trade_res["entry_price"] - trade_res["stop_loss"])
+        self.assertAlmostEqual(rr_ratio, 3.0, places=4)
+
+        # 3. DualModeExecutionEngine.calculate_5pct_risk_position precision check
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "PAPER"
+        engine.paper_wallet = MagicMock()
+        engine.paper_wallet.equity = 1000.0
+        engine.risk_pct = 0.05
+        engine.live_adapter = None
+        engine.pipeline = MagicMock()
+        engine.pipeline.exchange.price_to_precision.side_effect = lambda sym, p: f"{p:.2f}"
+        engine.get_symbol_limits = MagicMock(return_value={
+            "min_notional": 5.0,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.01
+        })
+
+        size, sl, tp, risk = engine.calculate_5pct_risk_position(
+            symbol="ETH/USDT:USDT",
+            entry_price=3000.0,
+            atr_val=50.0,
+            direction="LONG",
+            max_leverage=50,
+            account_equity=1000.0
+        )
+
+        self.assertEqual(risk, 50.0)  # 5% of 1000.0
+        self.assertEqual(sl, 2950.00)
+        self.assertEqual(tp, 3150.00)
+        self.assertAlmostEqual((tp - 3000.0) / (3000.0 - sl), 3.0, places=5)
 
 
 if __name__ == "__main__":
     unittest.main()
+

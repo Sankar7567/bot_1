@@ -177,25 +177,31 @@ class DataPipeline:
         timeframe: str,
         since: int,
         limit: int = 1000,
-        max_retries: int = 5
+        max_retries: int = 7
     ) -> List[list]:
-        """Fetches OHLCV candles with thread-local exponential backoff."""
+        """Fetches OHLCV candles with thread-local exponential backoff and rate-limit recovery."""
         backoff = 0.5
         for attempt in range(1, max_retries + 1):
             try:
                 candles = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
-                return candles
+                return candles or []
             except (ccxt.RateLimitExceeded, ccxt.DDoSProtection) as e:
-                logger.warning(f"Rate limit for {symbol} ({attempt}/{max_retries}). Backing off {backoff:.1f}s")
+                logger.warning(f"Rate limit for {symbol} ({attempt}/{max_retries}). Backing off {backoff:.1f}s: {e}")
                 time.sleep(backoff)
-                backoff = min(backoff * 2.0, 15.0)
+                backoff = min(backoff * 2.0, 30.0)
             except (ccxt.NetworkError, ccxt.RequestTimeout) as e:
-                logger.warning(f"Network error for {symbol} ({attempt}/{max_retries}). Backing off {backoff:.1f}s")
+                logger.warning(f"Network timeout for {symbol} ({attempt}/{max_retries}). Backing off {backoff:.1f}s: {e}")
                 time.sleep(backoff)
-                backoff = min(backoff * 2.0, 15.0)
+                backoff = min(backoff * 2.0, 30.0)
             except ccxt.ExchangeError as e:
-                logger.error(f"Exchange error for {symbol}: {e}")
-                break
+                msg = str(e).lower()
+                if "too many requests" in msg or "429" in msg or "-1003" in msg:
+                    logger.warning(f"Exchange rate limit for {symbol} ({attempt}/{max_retries}). Backing off {backoff:.1f}s")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2.0, 30.0)
+                else:
+                    logger.error(f"Exchange error for {symbol}: {e}")
+                    break
             except Exception as e:
                 logger.error(f"Unexpected error fetching {symbol}: {e}")
                 break
@@ -254,44 +260,59 @@ class DataPipeline:
         end_time_ms: int,
         batch_limit: int = 1000
     ) -> pd.DataFrame:
-        """Incrementally downloads OHLCV data between start_time_ms and end_time_ms."""
+        """
+        Downloads OHLCV data across extended windows (up to 5 years / 60 months).
+        Supports bidirectional historical backfilling and forward incremental updates.
+        """
         existing_df = self.load_symbol_data(timeframe, symbol)
         tf_ms = TIMEFRAME_MS.get(timeframe, 60 * 1000)
 
-        if not existing_df.empty:
-            last_dt = existing_df["timestamp"].max()
-            last_ts_ms = int(last_dt.timestamp() * 1000)
-            since = max(start_time_ms, last_ts_ms + tf_ms)
-        else:
-            since = start_time_ms
+        def _paginate_range(from_ms: int, to_ms: int) -> List[list]:
+            records = []
+            curr_since = from_ms
+            if curr_since >= to_ms:
+                return records
 
-        if since >= end_time_ms:
-            return existing_df
+            while curr_since < to_ms:
+                candles = self._fetch_ohlcv_with_backoff(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    since=curr_since,
+                    limit=batch_limit
+                )
+                if not candles:
+                    break
+
+                for c in candles:
+                    if c[0] <= to_ms:
+                        records.append(c)
+
+                last_returned_ts = candles[-1][0]
+                if last_returned_ts <= curr_since:
+                    break
+
+                curr_since = last_returned_ts + tf_ms
+                time.sleep(0.02)
+            return records
 
         new_records = []
-        current_since = since
+        if existing_df.empty:
+            new_records.extend(_paginate_range(start_time_ms, end_time_ms))
+        else:
+            min_dt = existing_df["timestamp"].min()
+            min_ts_ms = int(min_dt.timestamp() * 1000)
+            last_dt = existing_df["timestamp"].max()
+            last_ts_ms = int(last_dt.timestamp() * 1000)
 
-        while current_since < end_time_ms:
-            candles = self._fetch_ohlcv_with_backoff(
-                symbol=symbol,
-                timeframe=timeframe,
-                since=current_since,
-                limit=batch_limit
-            )
+            # 1. Backward historical fill (e.g., expanding from 12 months to 60 months)
+            if start_time_ms < (min_ts_ms - tf_ms * 2):
+                backward_records = _paginate_range(start_time_ms, min_ts_ms)
+                new_records.extend(backward_records)
 
-            if not candles:
-                break
-
-            for c in candles:
-                if c[0] <= end_time_ms:
-                    new_records.append(c)
-
-            last_returned_ts = candles[-1][0]
-            if last_returned_ts <= current_since:
-                break
-
-            current_since = last_returned_ts + tf_ms
-            time.sleep(0.02)  # Low-latency pacing for parallel workers
+            # 2. Forward incremental update to present
+            if (last_ts_ms + tf_ms) < end_time_ms:
+                forward_records = _paginate_range(last_ts_ms + tf_ms, end_time_ms)
+                new_records.extend(forward_records)
 
         if new_records:
             new_df = pd.DataFrame(
@@ -307,6 +328,7 @@ class DataPipeline:
             else:
                 combined_df = new_df
 
+            combined_df = combined_df.drop_duplicates(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
             self.save_symbol_data(combined_df, timeframe, symbol, compression="snappy")
             return combined_df
 
@@ -422,7 +444,7 @@ class DataPipeline:
     ) -> None:
         """
         Fast parallelized multi-timeframe synthetic OHLCV generator using Student-t fat tails
-        and Poisson volume spikes.
+        and Poisson volume spikes. Scalable across up to 5 years (1800 days / 60 months).
         """
         if symbols is None:
             symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "BNB/USDT:USDT", "XRP/USDT:USDT"]
@@ -445,11 +467,27 @@ class DataPipeline:
             rng = np.random.default_rng(seed + idx)
             initial_price = base_prices.get(sym, 100.0)
 
-            date_range_1m = pd.date_range(start=start_dt, end=end_dt, freq="1min", tz="UTC")
-            n = len(date_range_1m)
+            # Choose base frequency to avoid excessive memory on 5-year spans
+            if "1m" in timeframes:
+                base_freq = "1min"
+                vol = 0.0012
+                drift = 0.00001
+            elif "5m" in timeframes:
+                base_freq = "5min"
+                vol = 0.0025
+                drift = 0.00005
+            elif "15m" in timeframes:
+                base_freq = "15min"
+                vol = 0.0040
+                drift = 0.0001
+            else:
+                base_freq = "1h"
+                vol = 0.0080
+                drift = 0.0002
 
-            drift = 0.00001
-            vol = 0.0012
+            date_range = pd.date_range(start=start_dt, end=end_dt, freq=base_freq, tz="UTC")
+            n = len(date_range)
+
             raw_returns = rng.standard_t(df=5, size=n) * vol + drift
             price_series = initial_price * np.exp(np.cumsum(raw_returns))
 
@@ -467,8 +505,8 @@ class DataPipeline:
             spikes = (rng.poisson(lam=0.01, size=n) > 0) * rng.uniform(5, 20, size=n)
             volume = base_vol * (1.0 + spikes) * (initial_price / close)
 
-            df_1m = pd.DataFrame({
-                "timestamp": date_range_1m,
+            df_base = pd.DataFrame({
+                "timestamp": date_range,
                 "open": open_,
                 "high": high,
                 "low": low,
@@ -476,13 +514,21 @@ class DataPipeline:
                 "volume": volume
             })
 
-            if "1m" in timeframes:
-                self.save_symbol_data(df_1m, "1m", sym, compression="snappy")
+            # Save base timeframe
+            if base_freq == "1min" and "1m" in timeframes:
+                self.save_symbol_data(df_base, "1m", sym, compression="snappy")
+            elif base_freq == "5min" and "5m" in timeframes:
+                self.save_symbol_data(df_base, "5m", sym, compression="snappy")
+            elif base_freq == "15min" and "15m" in timeframes:
+                self.save_symbol_data(df_base, "15m", sym, compression="snappy")
+            elif base_freq == "1h" and "1h" in timeframes:
+                self.save_symbol_data(df_base, "1h", sym, compression="snappy")
 
+            # Resample to any remaining higher timeframes
             resample_map = {"5m": "5min", "15m": "15min", "1h": "1h"}
             for tf, freq in resample_map.items():
-                if tf in timeframes:
-                    resampled = df_1m.set_index("timestamp").resample(freq).agg({
+                if tf in timeframes and (base_freq != freq) and (base_freq in ("1min", "5min") if freq != "5min" else base_freq == "1min"):
+                    resampled = df_base.set_index("timestamp").resample(freq).agg({
                         "open": "first",
                         "high": "max",
                         "low": "min",
