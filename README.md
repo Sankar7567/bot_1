@@ -129,6 +129,9 @@ The daemon runs **infinitely without crashing**, cycling seamlessly through:
 | **Phase 2: Active Trade Monitoring** | Every 30s | Active trade open | Dedicated sub-loop sleeps 30 seconds, polls ticker price AND Binance `fetch_positions()` to verify live bracket fills |
 | **Phase 3: Completion, Cleanup & Reset** | Instant | Trade closed | Executes Closure Sweep (`cancel_all_orders`), marks state `CLOSED`, logs PnL to audit trail, and **immediately returns to Phase 1** to scan 24/7 |
 
+> [!IMPORTANT]
+> **Exchange-First Ground Truth (`exchange.fetch_positions()`):** The daemon treats your actual Binance Futures account as the absolute authority. If local state contains phantom trades (e.g. from tests or previous paper runs), they are automatically purged on startup and on every loop iteration. If 0 positions exist on Binance, the slate is wiped clean, orphan orders are swept, and universal scanning resumes immediately.
+
 Stop anytime with **Ctrl+C** — the daemon intercepts the interrupt, shuts down gracefully, and logs the exit.
 
 ### 7. System Status & Disk Usage Meter

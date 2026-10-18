@@ -418,12 +418,13 @@ class LiveExchangeAdapter:
             active = []
             for p in positions:
                 contracts = float(p.get("contracts", 0.0) or p.get("size", 0.0) or 0.0)
-                if abs(contracts) > 1e-6:
+                notional = float(p.get("notional", 0.0) or 0.0)
+                if abs(contracts) > 1e-6 or abs(notional) > 1e-6:
                     active.append(p)
             return active
         except Exception as e:
-            logger.error(f"Error fetching active positions: {e}")
-            return []
+            logger.error(f"Error fetching active positions from exchange: {e}")
+            raise
 
     def cancel_all_orders_for_symbol(self, symbol: str) -> int:
         """Cancels all open orders for a specific symbol."""
@@ -477,13 +478,16 @@ class LiveExchangeAdapter:
         lock is released promptly and the next scan cycle begins.
         """
         try:
-            positions = retry_ccxt_call(lambda: self.exchange.fetch_positions([symbol]))
-            for pos in positions:
-                contracts = float(pos.get("contracts", 0.0) or pos.get("size", 0.0) or 0.0)
-                if abs(contracts) > 1e-6:
-                    # Position is still live on exchange
-                    return False
-            # No non-zero position found — confirmed closed
+            active_positions = self.get_open_positions()
+            for pos in active_positions:
+                pos_sym = pos.get("symbol")
+                if pos_sym == symbol:
+                    contracts = float(pos.get("contracts", 0.0) or pos.get("size", 0.0) or 0.0)
+                    notional = float(pos.get("notional", 0.0) or 0.0)
+                    if abs(contracts) > 1e-6 or abs(notional) > 1e-6:
+                        # Position is still live on exchange
+                        return False
+            # No non-zero position found for this symbol — confirmed closed on exchange
             return True
         except Exception as e:
             logger.warning(f"[LIVE_CHECK] Could not verify position status for {symbol} on exchange: {e}")
@@ -656,12 +660,27 @@ class DualModeExecutionEngine:
 
     def startup_sweep(self) -> None:
         """
-        Automated Startup Sweep: Cancels dangling, unlinked, or leftover pending orders.
+        Automated Startup Sweep: Verifies exchange ground truth, clears phantom state,
+        and sweeps any dangling or leftover orphan bracket orders.
         """
         append_audit_log("STARTUP_SWEEP", f"Executing startup sweep in {self.mode} mode...")
         if self.mode == "LIVE" and self.live_adapter:
-            cleared = self.live_adapter.sweep_all_orphan_orders()
-            logger.info(f"Live startup sweep cleared {cleared} orphan orders.")
+            try:
+                # Exchange ground truth verification on startup
+                active_trade = self.get_active_trade()
+                cleared = self.live_adapter.sweep_all_orphan_orders()
+                if active_trade:
+                    logger.info(
+                        f"Live startup sweep verified active exchange trade on {active_trade['symbol']}. "
+                        f"Cleared {cleared} orphan orders."
+                    )
+                else:
+                    logger.info(
+                        f"Live startup sweep confirmed zero open positions on Binance. "
+                        f"Cleared {cleared} orphan orders."
+                    )
+            except Exception as e:
+                logger.warning(f"Error during live startup sweep: {e}")
         elif self.mode == "PAPER" and self.paper_wallet:
             if not self.paper_wallet.active_position:
                 cleared = self.paper_wallet.sweep_orphan_orders()
@@ -681,54 +700,154 @@ class DualModeExecutionEngine:
 
     def get_active_trade(self) -> Optional[Dict[str, Any]]:
         """
-        Reads current global active trade state from disk, and in LIVE mode
-        cross-verifies with active positions on the exchange.
+        Retrieves the currently active trade using exchange / wallet ground truth:
+
+        - In LIVE mode: Queries Binance Futures directly via self.live_adapter.get_open_positions().
+          - If real position(s) exist on Binance:
+            Synchronizes active_trade_state.json with the real exchange position (symbol,
+            direction, size, leverage, entry price). Preserves previous bracket levels if the
+            symbol matches; otherwise initializes default brackets. Returns the verified trade.
+          - If NO open positions exist on Binance:
+            The exchange account is completely clean. Immediately purges any phantom/stale local state
+            (e.g., GOOGL, HOME), writes {"status": "CLOSED"} to active_trade_state.json,
+            sweeps any orphan orders on the exchange, and returns None.
+
+        - In PAPER mode: self.paper_wallet.active_position is the ground truth.
+          - If paper_wallet has an active position: returns it and syncs to active_trade_state.json.
+          - If paper_wallet has no active position: resets active_trade_state.json to CLOSED and returns None.
         """
-        trade_from_file = None
-        if ACTIVE_TRADE_PATH.exists():
-            try:
-                with open(ACTIVE_TRADE_PATH, "r") as f:
-                    state = json.load(f)
-                    if state.get("status") == "OPEN":
-                        trade_from_file = state
-            except Exception as e:
-                logger.error(f"Error reading active trade state: {e}")
+        if self.mode == "LIVE":
+            if not self.live_adapter:
+                return None
 
-        # In LIVE mode, if active_trade_state.json is missing or says CLOSED,
-        # but there is an active position on the exchange (e.g. after a process restart),
-        # recover active trade state directly from the exchange!
-        if trade_from_file is None and self.mode == "LIVE" and self.live_adapter:
-            try:
-                open_pos = self.live_adapter.get_open_positions()
-                if open_pos:
-                    p = open_pos[0]
-                    sym = p.get("symbol")
-                    contracts = float(p.get("contracts", 0.0) or p.get("size", 0.0) or 0.0)
-                    entry_p = float(p.get("entryPrice", 0.0) or 0.0)
-                    side = p.get("side", "long").upper()
-                    if contracts < 0:
-                        side = "SHORT"
-                    elif contracts > 0 and side not in ["LONG", "SHORT"]:
-                        side = "LONG"
-                    recovered_trade = {
+            open_positions = self.live_adapter.get_open_positions()
+
+            # Inspect local state file to check if it held a stale or phantom trade
+            stale_state = {}
+            if ACTIVE_TRADE_PATH.exists():
+                try:
+                    with open(ACTIVE_TRADE_PATH, "r") as f:
+                        stale_state = json.load(f)
+                except Exception as e:
+                    logger.debug(f"Could not read active trade state file: {e}")
+
+            if not open_positions:
+                # Absolute Ground Truth: Zero open positions on Binance!
+                if stale_state.get("status") == "OPEN":
+                    stale_sym = stale_state.get("symbol", "UNKNOWN")
+                    logger.info(
+                        f"[EXCHANGE_SYNC] Zero open positions found on Binance. "
+                        f"Purging phantom/stale local trade '{stale_sym}' and resetting state to CLOSED."
+                    )
+                    append_audit_log(
+                        "EXCHANGE_SYNC",
+                        f"Zero open positions found on Binance. Purged phantom trade '{stale_sym}'.",
+                        {"purged_symbol": stale_sym}
+                    )
+                    self.save_active_trade({"status": "CLOSED"})
+                    self.live_adapter.sweep_all_orphan_orders()
+                elif ACTIVE_TRADE_PATH.exists() and stale_state.get("status") != "CLOSED":
+                    self.save_active_trade({"status": "CLOSED"})
+                return None
+
+            # Real open position exists on Binance!
+            pos = open_positions[0]
+            real_sym = pos.get("symbol")
+            contracts = float(pos.get("contracts", 0.0) or pos.get("size", 0.0) or 0.0)
+            entry_price = float(pos.get("entryPrice", 0.0) or pos.get("entry_price", 0.0) or 0.0)
+            side = str(pos.get("side", "")).upper()
+            if contracts < 0:
+                side = "SHORT"
+            elif contracts > 0 and side not in ["LONG", "SHORT"]:
+                side = "LONG"
+            elif not side:
+                side = "LONG" if contracts > 0 else "SHORT"
+
+            pos_size = abs(contracts)
+            pos_leverage = int(pos.get("leverage") or self.get_symbol_max_leverage(real_sym) or 20)
+
+            if entry_price <= 0:
+                entry_price = self.fetch_live_ticker_price(real_sym)
+
+            # Check if previous local state was tracking this exact symbol to preserve custom SL/TP
+            sl_price = None
+            tp_price = None
+            if stale_state.get("symbol") == real_sym and stale_state.get("status") == "OPEN":
+                sl_price = stale_state.get("stop_loss")
+                tp_price = stale_state.get("take_profit")
+
+            if sl_price is None or tp_price is None or sl_price <= 0 or tp_price <= 0:
+                # Compute default 1:3 RR bracket levels
+                sl_dist = entry_price * 0.02
+                tp_dist = entry_price * 0.06
+                if side == "LONG":
+                    sl_price = round(max(0.0001, entry_price - sl_dist), 4)
+                    tp_price = round(entry_price + tp_dist, 4)
+                else:
+                    sl_price = round(entry_price + sl_dist, 4)
+                    tp_price = round(max(0.0001, entry_price - tp_dist), 4)
+
+            verified_trade = {
+                "status": "OPEN",
+                "symbol": real_sym,
+                "direction": side,
+                "entry_price": round(entry_price, 4),
+                "stop_loss": round(sl_price, 4),
+                "take_profit": round(tp_price, 4),
+                "risk_pct": round(self.risk_pct * 100.0, 1),
+                "suggested_position_size": pos_size,
+                "leverage": pos_leverage,
+                "mode": "LIVE",
+                "ground_truth": "EXCHANGE"
+            }
+
+            if stale_state.get("symbol") != real_sym or stale_state.get("status") != "OPEN":
+                old_sym = stale_state.get("symbol", "NONE")
+                logger.info(
+                    f"[EXCHANGE_SYNC] Synchronized active trade with real Binance position: "
+                    f"{real_sym} ({side}, size: {pos_size}, entry: ${entry_price:.4f}) "
+                    f"(previous local state was: {old_sym})."
+                )
+                append_audit_log(
+                    "EXCHANGE_SYNC",
+                    f"Synchronized active trade to real Binance position: {real_sym} ({side})",
+                    {"symbol": real_sym, "previous_local_symbol": old_sym, "size": pos_size}
+                )
+                self.save_active_trade(verified_trade)
+
+            return verified_trade
+
+        elif self.mode == "PAPER":
+            if self.paper_wallet:
+                pos = self.paper_wallet.active_position
+                if pos:
+                    paper_trade = {
                         "status": "OPEN",
-                        "symbol": sym,
-                        "direction": side,
-                        "entry_price": entry_p,
-                        "stop_loss": entry_p * 0.98 if side == "LONG" else entry_p * 1.02,
-                        "take_profit": entry_p * 1.06 if side == "LONG" else entry_p * 0.94,
-                        "risk_pct": self.risk_pct * 100.0,
-                        "suggested_position_size": abs(contracts),
-                        "mode": "LIVE",
-                        "recovered_from_exchange": True
+                        "symbol": pos.get("symbol"),
+                        "direction": pos.get("direction"),
+                        "entry_price": pos.get("entry_price"),
+                        "stop_loss": pos.get("stop_loss") or pos.get("sl_price"),
+                        "take_profit": pos.get("take_profit") or pos.get("tp_price"),
+                        "risk_pct": round(self.risk_pct * 100.0, 1),
+                        "suggested_position_size": pos.get("size"),
+                        "leverage": pos.get("leverage", 20),
+                        "mode": "PAPER",
+                        "ground_truth": "SIMULATOR"
                     }
-                    self.save_active_trade(recovered_trade)
-                    logger.info(f"[EXCHANGE_RECOVERY] Detected existing open position on {sym} ({side}) on Binance. Resuming monitoring.")
-                    return recovered_trade
-            except Exception as e:
-                logger.warning(f"Could not inspect exchange for existing positions: {e}")
-
-        return trade_from_file
+                    return paper_trade
+                else:
+                    # Ground truth: Simulator wallet has no active position
+                    if ACTIVE_TRADE_PATH.exists():
+                        try:
+                            with open(ACTIVE_TRADE_PATH, "r") as f:
+                                st = json.load(f)
+                            if st.get("status") == "OPEN":
+                                self.save_active_trade({"status": "CLOSED"})
+                        except Exception:
+                            pass
+                    return None
+            else:
+                return None
 
     def save_active_trade(self, trade: Optional[Dict[str, Any]]) -> None:
         """Persists or clears global active trade state on disk."""
@@ -737,6 +856,24 @@ class DualModeExecutionEngine:
             with open(tmp_path, "w") as f:
                 json.dump(trade or {"status": "CLOSED"}, f, indent=2)
             tmp_path.replace(ACTIVE_TRADE_PATH)
+
+            # Sync paper wallet if active in PAPER mode
+            if self.mode == "PAPER" and self.paper_wallet:
+                if trade and trade.get("status") == "OPEN":
+                    if not self.paper_wallet.active_position:
+                        self.paper_wallet.active_position = {
+                            "symbol": trade.get("symbol"),
+                            "direction": trade.get("direction"),
+                            "entry_price": float(trade.get("entry_price", 0.0)),
+                            "size": float(trade.get("suggested_position_size") or trade.get("size", 1.0)),
+                            "stop_loss": float(trade.get("stop_loss", 0.0)),
+                            "take_profit": float(trade.get("take_profit", 0.0)),
+                            "leverage": int(trade.get("leverage", 20)),
+                            "unrealized_pnl": 0.0
+                        }
+                elif trade and trade.get("status") == "CLOSED":
+                    self.paper_wallet.active_position = None
+                    self.paper_wallet.pending_orders = []
         except Exception as e:
             logger.error(f"Error saving active trade state: {e}")
 

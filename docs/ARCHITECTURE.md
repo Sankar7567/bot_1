@@ -230,17 +230,36 @@ self.exchange.options["fetchOpenOrders"] = {"warnWithoutSymbol": False}
 ```
 This suppresses the CCXT rate-limit advisory emitted when `fetch_open_orders()` is called without a symbol. We call it intentionally during the global orphan sweep to scan all open orders across the account.
 
+### Exchange-First Ground Truth Architecture (`get_active_trade` & `startup_sweep`)
+
+The Binance Futures API (`exchange.fetch_positions()`) is the **absolute, authoritative ground truth** for active trade verification:
+
+1. **Elimination of Phantom Trades:**
+   - In LIVE mode, the engine never relies blindly on `active_trade_state.json`.
+   - On startup and at the beginning of every daemon loop iteration, `get_active_trade()` queries `self.live_adapter.get_open_positions()`.
+   - **Case A: Zero Active Positions on Binance (`len(open_positions) == 0`):**
+     - Even if `active_trade_state.json` contains a stale or mock entry (e.g., phantom symbols like `GOOGL/USDT:USDT` or `HOME/USDT:USDT`), the engine detects that the real Binance account is clean.
+     - Immediately purges phantom state, overwrites `active_trade_state.json` with `{"status": "CLOSED"}`, and calls `sweep_all_orphan_orders()` to cancel lingering bracket orders on Binance.
+     - Logs: `[EXCHANGE_SYNC] Zero open positions found on Binance. Purging phantom/stale local trade 'XYZ' and resetting state to CLOSED.`
+     - Returns `None`, immediately unblocking Phase 1 Universal Scanning.
+   - **Case B: Active Position Exists on Binance (`len(open_positions) > 0`):**
+     - Extracts the real exchange position (symbol, direction, contracts/size, entry price, leverage).
+     - Overwrites any mismatched local state, synchronizes `active_trade_state.json` with the real symbol (e.g., `JTO/USDT:USDT`), preserves valid bracket levels if symbol matches or sets standard brackets.
+     - Locks scanning and routes straight to Phase 2 monitoring for that specific real symbol.
+2. **Paper Mode Ground Truth:**
+   - In PAPER mode, `self.paper_wallet.active_position` is the single source of truth. If `None`, `active_trade_state.json` is set to `CLOSED`.
+
 ### Two-Layer Trade Exit Detection (`check_and_process_exit`)
 
 ```mermaid
 flowchart LR
-    A[Each daemon tick] --> B{Active trade?}
+    A[Each daemon tick] --> B{Active trade on exchange?}
     B -- No --> C[SCANNING PHASE]
     B -- Yes --> D[MONITORING PHASE]
     D --> E[Layer 1: Local price arithmetic\ncompare ticker vs TP SL levels]
-    D --> F["Layer 2: Live exchange reconciliation\nfetch_positions(symbol)"]
+    D --> F["Layer 2: Live exchange reconciliation\nget_open_positions() via fetch_positions"]
     E -- Exit detected --> G[Closure Sweep]
-    F -- Position gone on exchange --> G
+    F -- Position contracts drop to 0 --> G
     G --> H["Cancel orphan bracket orders\nUpdate active_trade_state.json CLOSED\nLog to audit"]
     H --> C
     C --> I[Full universe scan 500 symbols]
@@ -251,7 +270,7 @@ flowchart LR
 
 **Layer 1 — Local price arithmetic:** Compares current ticker price against stored `stop_loss` and `take_profit` levels.
 
-**Layer 2 — Live exchange reconciliation (LIVE mode only):** Calls `LiveExchangeAdapter.verify_position_closed_on_exchange(symbol)` which queries `fetch_positions([symbol])`. If Binance reports zero contracts for the symbol, the position is confirmed closed — even if the local ticker price hasn't crossed the arithmetic barrier yet (e.g., a limit bracket order filled at a gap).
+**Layer 2 — Live exchange reconciliation (LIVE mode only):** Calls `LiveExchangeAdapter.verify_position_closed_on_exchange(symbol)` which queries `get_open_positions()` (`fetch_positions()`). If Binance reports zero contracts / zero notional for the symbol, the position is confirmed closed — even if the local ticker price hasn't crossed the arithmetic barrier yet (e.g., a limit bracket order filled at a gap).
 
 This ensures the active-trade lock is **always released promptly**, preventing the daemon from being stuck waiting on a stale `active_trade_state.json` entry.
 

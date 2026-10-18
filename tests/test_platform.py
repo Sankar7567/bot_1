@@ -688,6 +688,167 @@ class TestCryptoMLPlatform(unittest.TestCase):
         if test_wallet.exists():
             test_wallet.unlink()
 
+    def test_22_exchange_first_ground_truth_eliminates_phantom_state(self):
+        """
+        Verify that when active_trade_state.json contains a phantom trade (e.g. GOOGL)
+        but Binance fetch_positions() returns 0 active positions, get_active_trade()
+        wipes out the phantom state, resets file to CLOSED, sweeps orphans, and returns None.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        # Write phantom state to disk
+        phantom_trade = {
+            "status": "OPEN",
+            "symbol": "GOOGL/USDT:USDT",
+            "direction": "SHORT",
+            "entry_price": 339.37,
+            "stop_loss": 340.0,
+            "take_profit": 335.0,
+            "mode": "LIVE"
+        }
+        with open(ACTIVE_TRADE_PATH, "w") as f:
+            json.dump(phantom_trade, f, indent=2)
+
+        # Mock LiveExchangeAdapter
+        mock_adapter = MagicMock(spec=LiveExchangeAdapter)
+        mock_adapter.get_open_positions.return_value = []
+        mock_adapter.sweep_all_orphan_orders.return_value = 2
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "LIVE"
+        engine.live_adapter = mock_adapter
+        engine.paper_wallet = None
+        engine.risk_pct = 0.05
+
+        active = engine.get_active_trade()
+
+        # Must return None (slate is clean, exchange has zero positions)
+        self.assertIsNone(active, "get_active_trade must return None when Binance has 0 open positions.")
+        mock_adapter.get_open_positions.assert_called_once()
+        mock_adapter.sweep_all_orphan_orders.assert_called_once()
+
+        # State file must be reset to CLOSED
+        with open(ACTIVE_TRADE_PATH, "r") as f:
+            updated_state = json.load(f)
+        self.assertEqual(updated_state.get("status"), "CLOSED", "Phantom state must be purged to CLOSED.")
+
+    def test_23_exchange_active_position_detected_and_synchronized(self):
+        """
+        Verify that when Binance has an active position (e.g. JTO), get_active_trade()
+        detects it, overwrites any stale state, synchronizes active_trade_state.json,
+        and returns the verified real exchange position.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        # Stale state with a different symbol
+        stale_state = {
+            "status": "OPEN",
+            "symbol": "HOME/USDT:USDT",
+            "direction": "LONG",
+            "entry_price": 10.0,
+            "stop_loss": 9.8,
+            "take_profit": 10.6,
+            "mode": "LIVE"
+        }
+        with open(ACTIVE_TRADE_PATH, "w") as f:
+            json.dump(stale_state, f, indent=2)
+
+        # Mock LiveExchangeAdapter returning real JTO position
+        mock_adapter = MagicMock(spec=LiveExchangeAdapter)
+        mock_adapter.get_open_positions.return_value = [
+            {
+                "symbol": "JTO/USDT:USDT",
+                "contracts": 1500.0,
+                "entryPrice": 0.4500,
+                "side": "long",
+                "leverage": 20,
+                "notional": 675.0
+            }
+        ]
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "LIVE"
+        engine.live_adapter = mock_adapter
+        engine.paper_wallet = None
+        engine.risk_pct = 0.05
+        engine.get_symbol_max_leverage = lambda s: 20
+
+        active = engine.get_active_trade()
+
+        self.assertIsNotNone(active, "Must detect real active position on Binance.")
+        self.assertEqual(active["symbol"], "JTO/USDT:USDT")
+        self.assertEqual(active["direction"], "LONG")
+        self.assertEqual(active["entry_price"], 0.4500)
+        self.assertEqual(active["suggested_position_size"], 1500.0)
+        self.assertEqual(active["status"], "OPEN")
+        self.assertEqual(active["ground_truth"], "EXCHANGE")
+
+        # Verify state file was updated with JTO
+        with open(ACTIVE_TRADE_PATH, "r") as f:
+            synced_state = json.load(f)
+        self.assertEqual(synced_state["symbol"], "JTO/USDT:USDT")
+        self.assertEqual(synced_state["status"], "OPEN")
+
+        # Cleanup
+        with open(ACTIVE_TRADE_PATH, "w") as f:
+            json.dump({"status": "CLOSED"}, f)
+
+    def test_24_live_phase2_exit_when_exchange_position_closes(self):
+        """
+        Verify that during Phase 2 monitoring in LIVE mode, when exchange position
+        contracts drop to 0, check_and_process_exit triggers immediate closure sweep,
+        cancels open orders, sets state to CLOSED, and returns the exit event.
+        """
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        mock_adapter = MagicMock(spec=LiveExchangeAdapter)
+        # Position closed on exchange
+        mock_adapter.get_open_positions.return_value = []
+        mock_adapter.cancel_all_orders_for_symbol.return_value = 1
+        mock_adapter.sweep_all_orphan_orders.return_value = 1
+        mock_adapter.fetch_equity_and_balance.return_value = (150.0, 150.0)
+
+        # verify_position_closed_on_exchange delegates to get_open_positions
+        def mock_verify_closed(sym):
+            active_pos = mock_adapter.get_open_positions()
+            return len(active_pos) == 0
+        mock_adapter.verify_position_closed_on_exchange = mock_verify_closed
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "LIVE"
+        engine.live_adapter = mock_adapter
+        engine.paper_wallet = None
+        engine.risk_pct = 0.05
+        engine.fetch_live_ticker_price = lambda s: 0.4800
+
+        active_trade = {
+            "status": "OPEN",
+            "symbol": "JTO/USDT:USDT",
+            "direction": "LONG",
+            "entry_price": 0.4500,
+            "stop_loss": 0.4410,
+            "take_profit": 0.4770,
+            "suggested_position_size": 1500.0,
+            "mode": "LIVE"
+        }
+        with open(ACTIVE_TRADE_PATH, "w") as f:
+            json.dump(active_trade, f, indent=2)
+
+        exit_event = engine.check_and_process_exit(active_trade)
+
+        self.assertIsNotNone(exit_event, "Must detect exit when exchange confirms position closed.")
+        self.assertEqual(exit_event["symbol"], "JTO/USDT:USDT")
+        mock_adapter.cancel_all_orders_for_symbol.assert_called_once_with("JTO/USDT:USDT")
+        mock_adapter.sweep_all_orphan_orders.assert_called_once()
+
+        # State file must be CLOSED
+        with open(ACTIVE_TRADE_PATH, "r") as f:
+            final_state = json.load(f)
+        self.assertEqual(final_state["status"], "CLOSED")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -34,7 +34,7 @@ from model import ModelTrainer
 from backtester import BacktestEngine, compare_risk_profiles
 from scanner import GlobalUniverseScanner
 from rolling_train_pipeline import RollingBatchPipeline
-from live_signals import LiveSignalGenerator, LATEST_SIGNAL_PATH, AUDIT_LOG_PATH
+from live_signals import LiveSignalGenerator, LATEST_SIGNAL_PATH, ACTIVE_TRADE_PATH, AUDIT_LOG_PATH
 from execution import DualModeExecutionEngine, PAPER_WALLET_PATH
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -656,6 +656,21 @@ def status():
             with open(PAPER_WALLET_PATH, "r") as f:
                 pw = json.load(f)
                 table.add_row("Paper Wallet Equity", f"${pw.get('equity', 0.0):.2f} (Realized PnL: ${pw.get('realized_pnl', 0.0):.2f})")
+        except Exception:
+            pass
+
+    if ACTIVE_TRADE_PATH.exists():
+        try:
+            with open(ACTIVE_TRADE_PATH, "r") as f:
+                at = json.load(f)
+                status_str = at.get("status", "CLOSED")
+                if status_str == "OPEN":
+                    table.add_row(
+                        "Active Trade State",
+                        f"{at.get('symbol')} ({at.get('direction')}) @ ${at.get('entry_price', 0):.4f} [{at.get('mode', 'PAPER')}]"
+                    )
+                else:
+                    table.add_row("Active Trade State", "None (Zero active positions)")
         except Exception:
             pass
 
