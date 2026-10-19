@@ -38,9 +38,9 @@ bot/
 │   ├── raw/{tf}/{sym}.parquet
 │   └── features/{tf}/{sym}.parquet
 └── models/
-    ├── lightgbm_crypto_model_v1.txt           # v1 Baseline model weights
+    ├── lightgbm_crypto_model_v1.txt           # v1 Legacy long-only baseline weights
     ├── lightgbm_crypto_model_v1_metadata.json # v1 Feature schema (75 features)
-    ├── lightgbm_crypto_model_v2.txt           # v2 Trend-Following model weights
+    ├── lightgbm_crypto_model_v2.txt           # v2 Symmetric long/short model weights
     └── lightgbm_crypto_model_v2_metadata.json # v2 Feature schema (111 features)
 ```
 
@@ -125,6 +125,10 @@ python cli.py execute --mode live --daemon --poll-interval 15 --monitor-interval
 The daemon runs **infinitely without crashing**, cycling seamlessly through:
 `Universal Scanning -> Global Best-Trade Selection -> Order Execution -> 30-Second Active Trade Monitoring -> Closure Sweep & Cleanup -> Infinite Re-Scanning`.
 
+Trading commands default to **v2**, which labels short winners as class 0 and long winners as class 2. The legacy `v1` checkpoint was trained with class 0 as a long stop-loss; it can still produce long signals, but its class 0 output is never submitted as a short.
+
+Live brackets use a strict **1:3 risk-reward ratio** after price-tick alignment. The stop distance rounds outward to the next valid tick, the target is set to exactly three times that distance, and a symbol is skipped if a positive target cannot be represented.
+
 | Phase | Cadence | Trigger | Autonomous Action |
 |---|---|---|---|
 | **Phase 1: Discovery & Execution** | Every 15s | No active trade | Scans 500+ symbols, evaluates ML confidence, skips sub-minimum trades (`SKIPPED_MIN_NOTIONAL`), executes best trade with isolated margin and 1:3 RR bracket orders |
@@ -144,8 +148,8 @@ python cli.py test-cleanup --symbol BTC/USDT:USDT
 ```
 Protocol executed:
 1. Places a test bracket order setup on Binance.
-2. Initiates aggressive multi-pass closure sweep (`cancel_all_orders` + individual `cancel_order` force-cancellations).
-3. Verifies via `fetch_open_orders(symbol)` that zero open orders linger.
+2. Initiates an aggressive multi-pass closure sweep for regular and Binance conditional/algo orders (`stop=True`), then force-cancels remaining IDs individually.
+3. Verifies both open-order endpoints return zero orders; fetch or cancellation verification errors do not count as success.
 4. Emits a rich validation table and asserts 100% cleanup pass.
 
 ### 8. System Status & Disk Usage Meter
@@ -223,11 +227,11 @@ The monitoring sub-loop checks this every 30 seconds (`--monitor-interval 30`), 
 
 ### Aggressive Bracket Order Cleanup & Verification Loop
 When either a Take-Profit or Stop-Loss order triggers and fills on Binance, the opposing bracket order must not linger as an orphan:
-1. **Multi-Pass Loop (Up to 5 Passes):** Calls `cancel_all_orders(symbol)` to issue bulk cancellation.
-2. **Lingering Order Verification:** Follows up by inspecting `fetch_open_orders(symbol)`.
-3. **Individual Force-Cancellations:** If any lingering orders are detected, loops over each order ID and calls `cancel_order(order_id, symbol)` individually.
+1. **Multi-Pass Loop (Up to 5 Passes):** Bulk-cancels regular orders and conditional/algo orders using CCXT's `stop=True` route.
+2. **Lingering Order Verification:** Inspects both `fetch_open_orders(symbol)` and `fetch_open_orders(symbol, params={"stop": True})`.
+3. **Individual Force-Cancellations:** Uses the matching regular or conditional cancel endpoint for each lingering order ID.
 4. **Exchange Propagation Delay:** Pauses 0.5s between passes for Binance matching engine propagation.
-5. **Zero-Orphan Invariance:** Repeats until `fetch_open_orders(symbol)` returns an empty list `[]`.
+5. **Zero-Orphan Invariance:** Repeats until both order endpoints return empty lists. A failed verification keeps the daemon in monitoring so it retries cleanup.
 
 ### Account-Wide Startup & Shutdown Sweeps
 - **Startup Sweep:** Before commencing discovery or monitoring, queries all open orders across the account. For any symbol without an active position, it triggers `cancel_all_orders_for_symbol()` to eliminate stale orders from prior crashed sessions.
@@ -244,7 +248,7 @@ When either a Take-Profit or Stop-Loss order triggers and fills on Binance, the 
 python -m unittest tests/test_platform.py -v
 ```
 
-All **27 tests** pass and validate:
+The **37-test suite** covers:
 
 | # | Test | What It Verifies |
 |---|---|---|
@@ -275,3 +279,13 @@ All **27 tests** pass and validate:
 | 25 | Bracket Cleanup Verification | Multi-pass cancellation + verification loop force-cancels orphans |
 | 26 | Shutdown Orphan Sweep | Shutdown sweep cleans all orphan orders across account on exit |
 | 27 | Live Orphan Test Harness | Test harness protocol confirms 100% zero leftover bracket orders |
+| 28 | Versioned Models | v1 and v2 checkpoints and their feature schemas load independently |
+| 29 | Trend Features | ADX, EMA slopes, MACD continuation, and trend alignment features |
+| 30 | Symmetric Labels | Both long and short winner labels are present |
+| 31 | v2 Rolling Training | Rolling trainer produces a v2 model checkpoint |
+| 32 | Data Pagination | Five-year ingestion paginates until the exchange returns no more candles |
+| 33 | Nuclear Reset | Regular and conditional open orders are cleared and verified |
+| 34 | Precise 1:3 Brackets | Fill-anchored long brackets preserve 1:3 RR at exchange precision |
+| 35 | Low-Price RR and Direction Mapping | Tick-aligned brackets and v2 long/short class mapping; v1 stop-loss class is not a short |
+| 36 | Conditional Order Cleanup | Binance conditional algo orders are canceled and fetch errors fail closed |
+| 37 | Short Backtests | Single-symbol and global backtests open, manage, and close short positions |

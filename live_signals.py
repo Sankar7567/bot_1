@@ -28,6 +28,7 @@ import numpy as np
 from data_pipeline import DataPipeline, sanitize_symbol_for_filename
 from features import FeatureEngineer
 from model import ModelTrainer
+from trading_rules import calculate_bracket_prices, market_tick_size, validate_rr_multipliers
 
 logger = logging.getLogger("LiveSignals")
 
@@ -73,7 +74,7 @@ class LiveSignalGenerator:
         sl_atr_mult: float = 1.0,
         tp_atr_mult: float = 3.0,
         pipeline: Optional[DataPipeline] = None,
-        model_version: str = "v1"
+        model_version: str = "v2"
     ):
         self.pipeline = pipeline or DataPipeline()
         self.fe = FeatureEngineer(self.pipeline)
@@ -90,6 +91,7 @@ class LiveSignalGenerator:
         self.max_leverage = max_leverage
         self.sl_atr_mult = sl_atr_mult
         self.tp_atr_mult = tp_atr_mult
+        validate_rr_multipliers(self.sl_atr_mult, self.tp_atr_mult)
 
     @property
     def symbols(self) -> List[str]:
@@ -221,22 +223,17 @@ class LiveSignalGenerator:
             if merged.empty:
                 return None
 
-            if self.trainer.model is not None:
+            if self.trainer.booster is not None or self.trainer.model is not None:
                 probs = self.trainer.predict_probabilities(merged)
-                prob_tp = float(probs[-1, 2])
-                prob_sl = float(probs[-1, 0])
+                direction, confidence = self.trainer.predict_directional_signal(probs[-1])
             else:
                 rsi = merged.iloc[-1].get("rsi_14", 50)
                 prob_tp = 0.40 if rsi > 50 else 0.20
                 prob_sl = 0.40 if rsi <= 50 else 0.20
-
-            # Determine direction
-            if prob_tp >= prob_sl:
-                direction = "LONG"
-                confidence = prob_tp
-            else:
-                direction = "SHORT"
-                confidence = prob_sl
+                if prob_tp >= prob_sl:
+                    direction, confidence = "LONG", prob_tp
+                else:
+                    direction, confidence = "SHORT", prob_sl
 
             return {
                 "symbol": sym,
@@ -293,24 +290,28 @@ class LiveSignalGenerator:
         if atr_val <= 0 or np.isnan(atr_val):
             atr_val = entry_price * 0.01
 
-        sl_dist = self.sl_atr_mult * atr_val
-        tp_dist = self.tp_atr_mult * atr_val
-
-        if direction == "LONG":
-            stop_loss = max(0.0001, entry_price - sl_dist)
-            take_profit = entry_price + tp_dist
-        else:  # SHORT
-            stop_loss = entry_price + sl_dist
-            take_profit = max(0.0001, entry_price - tp_dist)
+        try:
+            market = self.pipeline.exchange.market(sym)
+            tick_size = market_tick_size(
+                market, getattr(self.pipeline.exchange, "precisionMode", None)
+            )
+        except Exception:
+            tick_size = None
+        bracket_entry, stop_loss, take_profit, sl_dist = calculate_bracket_prices(
+            entry_price,
+            self.sl_atr_mult * atr_val,
+            direction,
+            tick_size=tick_size,
+        )
 
         dollar_risk = self.account_equity * self.risk_pct
         suggested_size = dollar_risk / sl_dist
-        pos_notional = suggested_size * entry_price
+        pos_notional = suggested_size * bracket_entry
 
         # Cap leverage
         max_notional = self.account_equity * self.max_leverage
         if pos_notional > max_notional:
-            suggested_size = max_notional / entry_price
+            suggested_size = max_notional / bracket_entry
 
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -319,9 +320,10 @@ class LiveSignalGenerator:
             "symbol": sym,
             "direction": direction,
             "confidence": float(round(best_candidate["confidence"], 4)),
-            "entry_price": float(round(entry_price, 4)),
-            "stop_loss": float(round(stop_loss, 4)),
-            "take_profit": float(round(take_profit, 4)),
+            "entry_price": float(bracket_entry),
+            "bracket_reference_price": float(bracket_entry),
+            "stop_loss": float(stop_loss),
+            "take_profit": float(take_profit),
             "risk_pct": float(round(self.risk_pct * 100.0, 1)),
             "suggested_position_size": float(round(suggested_size, 4)),
             "status": "SIGNAL_GENERATED"

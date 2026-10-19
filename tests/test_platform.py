@@ -869,29 +869,29 @@ class TestCryptoMLPlatform(unittest.TestCase):
         verifies via fetch_open_orders, force-cancels any lingering orders individually,
         and loops until zero open orders remain.
         """
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         from execution import LiveExchangeAdapter
 
         adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
         adapter.exchange = MagicMock()
 
-        # Simulate pass 1: bulk cancel returns 1 order, but fetch_open_orders still sees a lingering bracket order
-        adapter.exchange.cancel_all_orders.return_value = [{"id": "tp_123"}]
-        # First call to fetch_open_orders returns lingering SL order; second call returns empty list []
+        # A normal order endpoint is empty while the conditional endpoint still
+        # returns a lingering Binance STOP/TAKE_PROFIT algo order.
+        adapter.exchange.cancel_all_orders.side_effect = [[{"id": "tp_123"}], [], [], []]
         lingering_order = {"id": "sl_456", "symbol": "BTC/USDT:USDT"}
-        adapter.exchange.fetch_open_orders.side_effect = [[lingering_order], []]
+        adapter.exchange.fetch_open_orders.side_effect = [[], [lingering_order], [], []]
         adapter.exchange.cancel_order.return_value = {"id": "sl_456", "status": "canceled"}
 
-        cancelled_count = adapter.cancel_all_orders_for_symbol("BTC/USDT:USDT")
+        with patch("execution.append_audit_log"):
+            cancelled_count = adapter.cancel_all_orders_for_symbol("BTC/USDT:USDT")
 
-        # Must have called cancel_all_orders across passes
-        adapter.exchange.cancel_all_orders.assert_called_with("BTC/USDT:USDT")
-        self.assertEqual(adapter.exchange.cancel_all_orders.call_count, 2)
-        # Must have verified via fetch_open_orders
-        self.assertEqual(adapter.exchange.fetch_open_orders.call_count, 2)
-        # Must have force-cancelled the lingering order
-        adapter.exchange.cancel_order.assert_called_once_with("sl_456", "BTC/USDT:USDT")
-        self.assertEqual(cancelled_count, 3)
+        self.assertEqual(adapter.exchange.cancel_all_orders.call_count, 4)
+        adapter.exchange.cancel_all_orders.assert_any_call("BTC/USDT:USDT", params={"stop": True})
+        self.assertEqual(adapter.exchange.fetch_open_orders.call_count, 4)
+        adapter.exchange.cancel_order.assert_called_once_with(
+            "sl_456", "BTC/USDT:USDT", params={"stop": True}
+        )
+        self.assertEqual(cancelled_count, 2)
 
     def test_26_shutdown_sweep_cleans_orphans_on_exit(self):
         """
@@ -1129,37 +1129,33 @@ class TestCryptoMLPlatform(unittest.TestCase):
         2. PaperWallet.nuclear_reset_all_orders clears pending_orders and saves.
         3. DualModeExecutionEngine.nuclear_reset_all_orders delegates correctly.
         """
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
         from execution import LiveExchangeAdapter
 
         # 1. LiveExchangeAdapter multi-pass nuclear reset test
         adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
         adapter.exchange = MagicMock()
 
-        # Pass 1: cancel_all_orders called -> returns 2 bulk cancelled
-        # fetch_open_orders returns 2 lingering orders
-        lingering = [
-            {"id": "order_btc_sl", "symbol": "BTC/USDT:USDT"},
-            {"id": "order_eth_tp", "symbol": "ETH/USDT:USDT"}
+        # One regular and one conditional algo order remain on pass 1.
+        regular_order = {"id": "order_btc_sl", "symbol": "BTC/USDT:USDT"}
+        conditional_order = {"id": "order_eth_tp", "symbol": "ETH/USDT:USDT"}
+        adapter.exchange.cancel_all_orders.side_effect = [[], [], [], []]
+        adapter.exchange.fetch_open_orders.side_effect = [
+            [regular_order], [conditional_order], [], []
         ]
-        # Pass 2: fetch_open_orders returns [] (verified empty)
-        adapter.exchange.cancel_all_orders.side_effect = [
-            [{"id": "b1"}, {"id": "b2"}],  # Global bulk pass 1
-            [],                            # Symbol BTC pass 1
-            [],                            # Symbol ETH pass 1
-            [],                            # Global bulk pass 2
-        ]
-        adapter.exchange.fetch_open_orders.side_effect = [lingering, []]
         adapter.exchange.cancel_order.return_value = {"status": "canceled"}
 
-        res = adapter.nuclear_reset_all_orders(max_passes=5)
+        with patch("execution.append_audit_log"), patch("execution.time.sleep"):
+            res = adapter.nuclear_reset_all_orders(max_passes=5)
 
         self.assertTrue(res["verified_empty"], "Nuclear reset must verify zero open orders remaining")
         self.assertEqual(res["passes_run"], 2, "Nuclear reset should complete on pass 2")
-        self.assertGreaterEqual(res["total_cancelled"], 4, "Must cancel bulk plus 2 individual force-cancels")
+        self.assertGreaterEqual(res["total_cancelled"], 2, "Must cancel both remaining order types")
         # Ensure individual cancel was called for both lingering orders
         adapter.exchange.cancel_order.assert_any_call("order_btc_sl", "BTC/USDT:USDT")
-        adapter.exchange.cancel_order.assert_any_call("order_eth_tp", "ETH/USDT:USDT")
+        adapter.exchange.cancel_order.assert_any_call(
+            "order_eth_tp", "ETH/USDT:USDT", params={"stop": True}
+        )
 
         # 2. PaperWallet nuclear reset test
         wallet = PaperWallet.__new__(PaperWallet)
@@ -1179,9 +1175,10 @@ class TestCryptoMLPlatform(unittest.TestCase):
         engine.live_adapter = adapter
         engine.paper_wallet = None
 
-        adapter.exchange.fetch_open_orders.side_effect = [[]]
-        adapter.exchange.cancel_all_orders.side_effect = [[]]
-        eng_res = engine.nuclear_reset_all_orders()
+        adapter.exchange.fetch_open_orders.side_effect = [[], []]
+        adapter.exchange.cancel_all_orders.side_effect = [[], []]
+        with patch("execution.append_audit_log"):
+            eng_res = engine.nuclear_reset_all_orders()
         self.assertTrue(eng_res["verified_empty"])
 
     def test_34_precise_1_to_3_rr_and_tick_precision(self):
@@ -1274,6 +1271,123 @@ class TestCryptoMLPlatform(unittest.TestCase):
         self.assertEqual(sl, 2950.00)
         self.assertEqual(tp, 3150.00)
         self.assertAlmostEqual((tp - 3000.0) / (3000.0 - sl), 3.0, places=5)
+
+    def test_35_low_price_tick_rr_and_bidirectional_class_mapping(self):
+        """Low-priced contracts retain exact 1:3 brackets, and both v2 sides work."""
+        from unittest.mock import MagicMock
+        from trading_rules import calculate_bracket_prices, select_directional_signal
+
+        entry = 0.08428
+        atr = 0.00023
+        for direction in ("LONG", "SHORT"):
+            anchor, stop, target, risk_distance = calculate_bracket_prices(
+                entry, atr, direction, tick_size=0.00001
+            )
+            if direction == "LONG":
+                rr = (target - anchor) / (anchor - stop)
+            else:
+                rr = (anchor - target) / (stop - anchor)
+            self.assertAlmostEqual(rr, 3.0, places=10)
+            self.assertAlmostEqual(risk_distance, 0.00023, places=10)
+
+        self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], True), ("SHORT", 0.80))
+        self.assertEqual(select_directional_signal([0.10, 0.10, 0.80], True), ("LONG", 0.80))
+        # Legacy class 0 means a long stop-loss, so it must never be opened as short.
+        self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], False), ("LONG", 0.10))
+        self.assertTrue(ModelTrainer().symmetric_directional)
+        self.assertFalse(ModelTrainer(model_version="v1").symmetric_directional)
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "PAPER"
+        engine.paper_wallet = MagicMock()
+        engine.paper_wallet.equity = 1000.0
+        engine.risk_pct = 0.05
+        engine.live_adapter = None
+        engine.pipeline = MagicMock()
+        engine.pipeline.exchange.price_to_precision.side_effect = lambda sym, price: f"{price:.5f}"
+        engine.get_symbol_limits = MagicMock(return_value={
+            "min_notional": 5.0,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.00001
+        })
+        for direction in ("LONG", "SHORT"):
+            _, stop, target, _ = engine.calculate_5pct_risk_position(
+                "MANA/USDT:USDT", entry, atr, direction, 75, account_equity=1000.0
+            )
+            if direction == "LONG":
+                rr = (target - entry) / (entry - stop)
+            else:
+                rr = (entry - target) / (stop - entry)
+            self.assertAlmostEqual(rr, 3.0, places=8)
+
+    def test_36_order_fetch_errors_do_not_report_cleanup_success(self):
+        """A failed conditional-order fetch must fail closed instead of looking empty."""
+        from unittest.mock import MagicMock, patch
+        from execution import LiveExchangeAdapter
+
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.exchange = MagicMock()
+        adapter.exchange.cancel_all_orders.return_value = []
+        adapter.exchange.fetch_open_orders.side_effect = RuntimeError("conditional endpoint unavailable")
+
+        with patch("execution.time.sleep"), self.assertRaises(RuntimeError):
+            adapter.cancel_all_orders_for_symbol("BTC/USDT:USDT")
+
+    def test_37_short_positions_work_in_single_and_global_backtests(self):
+        """Both backtest engines consume short probabilities and close shorts correctly."""
+        timestamps = pd.date_range("2026-01-01", periods=50, freq="5min", tz="UTC")
+        frame = pd.DataFrame({
+            "timestamp": timestamps,
+            "open": 100.0,
+            "high": 100.2,
+            "low": 99.8,
+            "close": 100.0,
+            "atr_14": 1.0,
+            "prob_long": 0.0,
+            "prob_short": 0.0,
+        })
+        frame.loc[0, "prob_short"] = 0.9
+        frame.loc[1, "low"] = 96.8
+
+        single = BacktestEngine(
+            initial_capital=1000.0,
+            risk_per_trade=0.03,
+            max_leverage=100.0,
+            slippage_bps=0.0,
+        ).run_backtest(frame, confidence_threshold=0.35)
+        self.assertFalse(single["trades"].empty)
+        trade = single["trades"].iloc[0]
+        self.assertEqual(trade["side"], "SHORT")
+        self.assertEqual(trade["exit_reason"], "TAKE_PROFIT")
+        self.assertAlmostEqual(
+            (trade["entry_price"] - trade["tp_price"]) /
+            (trade["sl_price"] - trade["entry_price"]),
+            3.0,
+            places=8,
+        )
+
+        global_frame = frame.iloc[:3].copy()
+        global_result = GlobalUniverseScanner(
+            initial_capital=1000.0,
+            risk_per_trade=0.03,
+            max_leverage=100.0,
+            slippage_bps=0.0,
+            pipeline=self.pipeline,
+        ).run_global_backtest(
+            universe_dfs={"TEST/USDT:USDT": global_frame},
+            confidence_threshold=0.35,
+        )
+        self.assertFalse(global_result["trades"].empty)
+        global_trade = global_result["trades"].iloc[0]
+        self.assertEqual(global_trade["side"], "SHORT")
+        self.assertEqual(global_trade["exit_reason"], "TAKE_PROFIT")
+        self.assertAlmostEqual(
+            (global_trade["entry_price"] - global_trade["tp_price"]) /
+            (global_trade["sl_price"] - global_trade["entry_price"]),
+            3.0,
+            places=8,
+        )
 
 
 if __name__ == "__main__":

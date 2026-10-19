@@ -82,7 +82,7 @@ st.markdown("""
 
 
 @st.cache_resource
-def get_platform_components(model_version: str = "v1"):
+def get_platform_components(model_version: str = "v2"):
     """Initializes and caches platform singletons for the selected model version."""
     pipeline = DataPipeline()
     feature_engineer = FeatureEngineer(pipeline)
@@ -101,11 +101,10 @@ st.sidebar.subheader("🤖 Model Version")
 model_version_sel = st.sidebar.radio(
     "Active Model",
     ["v1", "v2"],
-    index=0,
+    index=1,
     help=(
-        "**v1** — Baseline LightGBM model (original feature set, 75 features). "
-        "**v2** — Trend-Following model with ADX, EMA slopes & MACD continuation (111 features). "
-        "Requires retraining with `rolling-train --model-version v2` before use."
+        "**v1** — Legacy baseline checkpoint; class 0 represents a long stop, so it cannot signal shorts. "
+        "**v2** — Symmetric directional checkpoint with ADX, EMA slopes & MACD continuation; supports long and short entries."
     )
 )
 
@@ -146,9 +145,10 @@ initial_capital = st.sidebar.number_input("Starting Capital ($)", value=100.0, s
 st.sidebar.subheader("🎯 Risk & Strategy Parameters")
 risk_pct_val = st.sidebar.selectbox("Risk per Trade (Strict Equity %)", [0.05, 0.03, 0.02], index=0, format_func=lambda x: f"{int(x*100)}% Account Risk")
 sl_atr_mult = st.sidebar.slider("Stop-Loss (x ATR)", min_value=0.5, max_value=3.0, value=1.0, step=0.1)
-tp_atr_mult = st.sidebar.slider("Take-Profit (x ATR)", min_value=1.0, max_value=6.0, value=3.0, step=0.1)
+tp_atr_mult = 3.0 * sl_atr_mult
 rr_ratio = tp_atr_mult / sl_atr_mult
-st.sidebar.info(f"**Risk-Reward Ratio:** 1 : {rr_ratio:.2f}")
+st.sidebar.caption(f"Take-Profit: {tp_atr_mult:.1f}x ATR (fixed 1:3 risk-reward)")
+st.sidebar.info(f"**Risk-Reward Ratio:** 1 : {rr_ratio:.2f} (fixed)")
 
 confidence_threshold = st.sidebar.slider(
     "ML Probability Threshold",

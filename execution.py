@@ -61,6 +61,7 @@ import numpy as np
 from data_pipeline import DataPipeline, sanitize_symbol_for_filename
 from features import FeatureEngineer
 from model import ModelTrainer
+from trading_rules import calculate_bracket_prices, market_tick_size
 from live_signals import append_audit_log, LATEST_SIGNAL_PATH, ACTIVE_TRADE_PATH, AUDIT_LOG_PATH
 
 logger = logging.getLogger("ExecutionEngine")
@@ -439,13 +440,52 @@ class LiveExchangeAdapter:
             logger.error(f"Error fetching active positions from exchange: {e}")
             raise
 
+    def _fetch_open_orders_with_types(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch both regular and conditional/algo futures orders via CCXT."""
+        regular = retry_ccxt_call(lambda: self.exchange.fetch_open_orders(symbol))
+        conditional = retry_ccxt_call(
+            lambda: self.exchange.fetch_open_orders(symbol, params={"stop": True})
+        )
+        combined: List[Dict[str, Any]] = []
+        for order in regular or []:
+            item = dict(order)
+            item["_conditional_order"] = False
+            combined.append(item)
+        for order in conditional or []:
+            item = dict(order)
+            item["_conditional_order"] = True
+            combined.append(item)
+        return combined
+
+    def _cancel_all_order_types_for_symbol(self, symbol: str) -> int:
+        """Cancel regular orders and Binance conditional/algo orders."""
+        cancelled = 0
+        for params in ({}, {"stop": True}):
+            try:
+                if params:
+                    response = retry_ccxt_call(
+                        lambda p=params: self.exchange.cancel_all_orders(symbol, params=p)
+                    )
+                else:
+                    response = retry_ccxt_call(lambda: self.exchange.cancel_all_orders(symbol))
+                if isinstance(response, list):
+                    cancelled += len(response)
+            except Exception as exc:
+                # Some CCXT versions may not expose Binance's algo-order API. The
+                # following verification still fails closed if algo orders remain.
+                logger.warning(
+                    f"[BRACKET_CLEANUP] Bulk cancel error for {symbol} "
+                    f"(conditional={bool(params)}): {exc}"
+                )
+        return cancelled
+
     def cancel_all_orders_for_symbol(self, symbol: str) -> int:
         """
         Aggressively cancels ALL open orders for a symbol and verifies zero remain.
 
         Strategy:
-          1. Call exchange.cancel_all_orders(symbol) to bulk-cancel.
-          2. Verify with exchange.fetch_open_orders(symbol).
+          1. Bulk-cancel regular and conditional/algo orders.
+          2. Verify both order types with exchange.fetch_open_orders(symbol).
           3. If any orders still linger (race conditions, partial fills in flight),
              force-cancel each one individually.
           4. Repeat verification until fetch_open_orders(symbol) returns [].
@@ -453,29 +493,29 @@ class LiveExchangeAdapter:
         """
         total_cancelled = 0
         max_passes = 5
+        verified_empty = False
 
         for pass_num in range(1, max_passes + 1):
-            # Step 1: Bulk cancel
-            try:
-                res = retry_ccxt_call(lambda: self.exchange.cancel_all_orders(symbol))
-                batch_count = len(res) if isinstance(res, list) else 0
-                total_cancelled += batch_count
-                if batch_count > 0:
-                    logger.info(
-                        f"[BRACKET_CLEANUP] Pass {pass_num}: Bulk-cancelled {batch_count} "
-                        f"open orders for {symbol}."
-                    )
-            except Exception as e:
-                logger.warning(f"[BRACKET_CLEANUP] Pass {pass_num}: Bulk cancel error for {symbol}: {e}")
+            # Step 1: Cancel both normal orders and conditional stop/TP algo orders.
+            total_cancelled += self._cancel_all_order_types_for_symbol(symbol)
 
-            # Step 2: Verify — fetch remaining open orders for this symbol
+            # Step 2: Verify — fetch both order types for this symbol.
             try:
-                remaining = retry_ccxt_call(lambda: self.exchange.fetch_open_orders(symbol))
+                remaining = self._fetch_open_orders_with_types(symbol)
             except Exception as e:
-                logger.warning(f"[BRACKET_CLEANUP] Pass {pass_num}: Could not verify open orders for {symbol}: {e}")
-                remaining = []
+                logger.warning(
+                    f"[BRACKET_CLEANUP] Pass {pass_num}: Could not verify all order types "
+                    f"for {symbol}: {e}"
+                )
+                if pass_num < max_passes:
+                    time.sleep(0.5)
+                    continue
+                raise RuntimeError(
+                    f"Could not verify that all orders were cleared for {symbol}"
+                ) from e
 
             if not remaining:
+                verified_empty = True
                 logger.info(
                     f"[BRACKET_CLEANUP] Verified: ZERO open orders remain for {symbol} "
                     f"after {pass_num} pass(es). Total cancelled: {total_cancelled}."
@@ -490,7 +530,15 @@ class LiveExchangeAdapter:
             for order in remaining:
                 oid = order.get("id")
                 try:
-                    retry_ccxt_call(lambda: self.exchange.cancel_order(oid, symbol))
+                    conditional = bool(order.get("_conditional_order"))
+                    if conditional:
+                        retry_ccxt_call(
+                            lambda order_id=oid: self.exchange.cancel_order(
+                                order_id, symbol, params={"stop": True}
+                            )
+                        )
+                    else:
+                        retry_ccxt_call(lambda order_id=oid: self.exchange.cancel_order(order_id, symbol))
                     total_cancelled += 1
                     logger.info(f"[BRACKET_CLEANUP] Force-cancelled lingering order {oid} on {symbol}.")
                 except Exception as err:
@@ -503,11 +551,13 @@ class LiveExchangeAdapter:
             # Brief pause before next verification pass to let exchange state propagate
             if pass_num < max_passes:
                 time.sleep(0.5)
-        else:
-            # Exhausted all passes — log a critical warning
+        if not verified_empty:
             logger.error(
                 f"[BRACKET_CLEANUP] CRITICAL: Could not fully clear open orders for {symbol} "
                 f"after {max_passes} passes. Manual inspection recommended."
+            )
+            raise RuntimeError(
+                f"Could not fully clear regular and conditional orders for {symbol} after {max_passes} passes"
             )
 
         if total_cancelled > 0:
@@ -524,40 +574,32 @@ class LiveExchangeAdapter:
         Groups orphan orders by symbol, then calls cancel_all_orders_for_symbol()
         (with verification loop) for each positionless symbol to guarantee zero leftovers.
         """
-        try:
-            open_orders = retry_ccxt_call(lambda: self.exchange.fetch_open_orders())
-            if not open_orders:
-                return 0
-
-            active_positions = self.get_open_positions()
-            active_symbols = {p.get("symbol") for p in active_positions}
-
-            # Group orphan orders by symbol
-            orphan_symbols = set()
-            for o in open_orders:
-                sym = o.get("symbol")
-                if sym and sym not in active_symbols:
-                    orphan_symbols.add(sym)
-
-            if not orphan_symbols:
-                return 0
-
-            total_cancelled = 0
-            for sym in orphan_symbols:
-                logger.info(f"[ORPHAN_SWEEP] Symbol {sym} has no active position. Aggressively cleaning all orders...")
-                cancelled = self.cancel_all_orders_for_symbol(sym)
-                total_cancelled += cancelled
-
-            if total_cancelled > 0:
-                append_audit_log(
-                    "ORPHAN_SWEEP",
-                    f"Cleaned up {total_cancelled} orphan orders across {len(orphan_symbols)} positionless symbols.",
-                    {"symbols": list(orphan_symbols), "total_cancelled": total_cancelled}
-                )
-            return total_cancelled
-        except Exception as e:
-            logger.error(f"Error during exchange orphan sweep: {e}")
+        open_orders = self._fetch_open_orders_with_types()
+        if not open_orders:
             return 0
+
+        active_positions = self.get_open_positions()
+        active_symbols = {p.get("symbol") for p in active_positions}
+
+        # Group regular and conditional orders by symbol.
+        orphan_symbols = {
+            order.get("symbol")
+            for order in open_orders
+            if order.get("symbol") and order.get("symbol") not in active_symbols
+        }
+
+        total_cancelled = 0
+        for sym in orphan_symbols:
+            logger.info(f"[ORPHAN_SWEEP] Symbol {sym} has no active position. Cleaning all order types...")
+            total_cancelled += self.cancel_all_orders_for_symbol(sym)
+
+        if total_cancelled > 0:
+            append_audit_log(
+                "ORPHAN_SWEEP",
+                f"Cleaned up {total_cancelled} orphan orders across {len(orphan_symbols)} positionless symbols.",
+                {"symbols": list(orphan_symbols), "total_cancelled": total_cancelled}
+            )
+        return total_cancelled
 
     def nuclear_reset_all_orders(self, max_passes: int = 5) -> Dict[str, Any]:
         """
@@ -572,20 +614,12 @@ class LiveExchangeAdapter:
 
         for pass_num in range(1, max_passes + 1):
             passes_run = pass_num
-            # 1. Attempt global cancel_all_orders without symbol if supported
+            # 1. Query regular and conditional open orders across the account.
             try:
-                bulk_res = retry_ccxt_call(lambda: self.exchange.cancel_all_orders())
-                if isinstance(bulk_res, list):
-                    total_cancelled += len(bulk_res)
-            except Exception as e:
-                logger.debug(f"[NUCLEAR_RESET] Pass {pass_num}: Global bulk cancel attempt note: {e}")
-
-            # 2. Query all remaining open orders across the entire account
-            try:
-                open_orders = retry_ccxt_call(lambda: self.exchange.fetch_open_orders())
+                open_orders = self._fetch_open_orders_with_types()
             except Exception as e:
                 logger.warning(f"[NUCLEAR_RESET] Pass {pass_num}: Could not fetch open orders: {e}")
-                open_orders = []
+                continue
 
             if not open_orders:
                 verified_empty = True
@@ -599,26 +633,33 @@ class LiveExchangeAdapter:
                 f"[NUCLEAR_RESET] Pass {pass_num}: Found {len(open_orders)} open orders across account. Force-cancelling..."
             )
 
-            # 3. For each symbol present, invoke cancel_all_orders(symbol)
+            # 2. Bulk-cancel both types for each symbol, then force-cancel any
+            # individual order that remains in either endpoint.
             symbols_seen = set()
             for order in open_orders:
                 sym = order.get("symbol")
                 if sym and sym not in symbols_seen:
                     symbols_seen.add(sym)
-                    try:
-                        sym_res = retry_ccxt_call(lambda: self.exchange.cancel_all_orders(sym))
-                        if isinstance(sym_res, list):
-                            total_cancelled += len(sym_res)
-                    except Exception as sym_err:
-                        logger.debug(f"[NUCLEAR_RESET] Symbol bulk cancel error for {sym}: {sym_err}")
+                    total_cancelled += self._cancel_all_order_types_for_symbol(sym)
 
-            # 4. Force-cancel each remaining order individually by ID
+            # 3. Force-cancel each remaining order individually by ID.
             for order in open_orders:
                 oid = order.get("id")
                 sym = order.get("symbol")
                 if oid:
                     try:
-                        retry_ccxt_call(lambda: self.exchange.cancel_order(oid, sym))
+                        if order.get("_conditional_order"):
+                            retry_ccxt_call(
+                                lambda order_id=oid, order_symbol=sym: self.exchange.cancel_order(
+                                    order_id, order_symbol, params={"stop": True}
+                                )
+                            )
+                        else:
+                            retry_ccxt_call(
+                                lambda order_id=oid, order_symbol=sym: self.exchange.cancel_order(
+                                    order_id, order_symbol
+                                )
+                            )
                         total_cancelled += 1
                         logger.info(f"[NUCLEAR_RESET] Force-cancelled order {oid} on {sym}.")
                     except Exception as err:
@@ -633,7 +674,7 @@ class LiveExchangeAdapter:
 
         if not verified_empty:
             try:
-                final_orders = retry_ccxt_call(lambda: self.exchange.fetch_open_orders())
+                final_orders = self._fetch_open_orders_with_types()
                 verified_empty = (len(final_orders) == 0)
             except Exception:
                 verified_empty = False
@@ -712,20 +753,57 @@ class LiveExchangeAdapter:
             ticker = self.exchange.fetch_ticker(symbol)
             entry_price = float(ticker.get("last") or ticker.get("close") or 0.0)
 
+        bracket_entry = entry_price
         # Precise 1:3 RR Re-anchoring from actual entry price if ATR is supplied
         if atr is not None and atr > 0 and entry_price > 0:
-            if direction == "LONG":
-                raw_sl = max(0.0001, entry_price - (1.0 * atr))
-                raw_tp = entry_price + (3.0 * atr)
-            else:
-                raw_sl = entry_price + (1.0 * atr)
-                raw_tp = max(0.0001, entry_price - (3.0 * atr))
-            formatted_sl = float(self.exchange.price_to_precision(symbol, raw_sl))
-            formatted_tp = float(self.exchange.price_to_precision(symbol, raw_tp))
+            tick = market_tick_size(market, getattr(self.exchange, "precisionMode", None))
+            try:
+                bracket_entry, formatted_sl, formatted_tp, _ = calculate_bracket_prices(
+                    entry_price, atr, direction, tick_size=tick
+                )
+            except Exception as bracket_error:
+                try:
+                    self.exchange.create_order(
+                        symbol=symbol,
+                        type="MARKET",
+                        side=opp_side,
+                        amount=formatted_amount,
+                        params={"reduceOnly": True}
+                    )
+                finally:
+                    self.cancel_all_orders_for_symbol(symbol)
+                raise RuntimeError(
+                    f"Could not create a valid strict 1:3 bracket for {symbol}; the entry was closed"
+                ) from bracket_error
+            # Values derived from an exact tick size are already exchange
+            # aligned. Use CCXT formatting only when market metadata lacked a
+            # tick, then validate the returned levels against the same anchor.
+            if tick is None:
+                formatted_sl = float(self.exchange.price_to_precision(symbol, formatted_sl))
+                formatted_tp = float(self.exchange.price_to_precision(symbol, formatted_tp))
             logger.info(
-                f"[PRECISE_RR] Re-anchored exact 1:3 RR from actual fill ${entry_price:.4f}: "
-                f"SL=${formatted_sl} (1xATR), TP=${formatted_tp} (3xATR)"
+                f"[PRECISE_RR] Re-anchored exact 1:3 RR from tick reference ${bracket_entry:.8g} "
+                f"(actual fill ${entry_price:.8g}): "
+                f"SL=${formatted_sl}, TP=${formatted_tp}"
             )
+            risk_distance = abs(bracket_entry - formatted_sl)
+            reward_distance = abs(formatted_tp - bracket_entry)
+            if risk_distance <= 0 or abs(reward_distance / risk_distance - 3.0) > 1e-8:
+                try:
+                    self.exchange.create_order(
+                        symbol=symbol,
+                        type="MARKET",
+                        side=opp_side,
+                        amount=formatted_amount,
+                        params={"reduceOnly": True}
+                    )
+                finally:
+                    self.cancel_all_orders_for_symbol(symbol)
+                raise ValueError(
+                    f"Exchange precision cannot represent strict 1:3 levels for {symbol}: "
+                    f"reference={bracket_entry}, SL={formatted_sl}, TP={formatted_tp}; "
+                    "the entry was immediately closed"
+                )
 
         # 2. Stop-Loss Bracket Order (reduce-only)
         sl_order = None
@@ -740,6 +818,15 @@ class LiveExchangeAdapter:
             logger.info(f"Placed Stop-Loss order at {formatted_sl} for {symbol}.")
         except Exception as e:
             logger.error(f"Failed to place SL bracket order: {e}")
+            self.exchange.create_order(
+                symbol=symbol,
+                type="MARKET",
+                side=opp_side,
+                amount=formatted_amount,
+                params={"reduceOnly": True}
+            )
+            self.cancel_all_orders_for_symbol(symbol)
+            raise RuntimeError(f"Could not protect {symbol} entry with a stop; position was closed") from e
 
         # 3. Take-Profit Bracket Order (reduce-only)
         tp_order = None
@@ -754,10 +841,20 @@ class LiveExchangeAdapter:
             logger.info(f"Placed Take-Profit order at {formatted_tp} for {symbol}.")
         except Exception as e:
             logger.error(f"Failed to place TP bracket order: {e}")
+            self.exchange.create_order(
+                symbol=symbol,
+                type="MARKET",
+                side=opp_side,
+                amount=formatted_amount,
+                params={"reduceOnly": True}
+            )
+            self.cancel_all_orders_for_symbol(symbol)
+            raise RuntimeError(f"Could not complete {symbol} bracket; position was closed") from e
 
         return {
             "entry_order": entry_order,
             "entry_price": entry_price,
+            "bracket_reference_price": bracket_entry,
             "amount": formatted_amount,
             "sl_order": sl_order,
             "tp_order": tp_order,
@@ -923,7 +1020,7 @@ class LiveExchangeAdapter:
                 )
 
             # Step 4: Verify open orders exist before cleanup
-            open_before = retry_ccxt_call(lambda: self.exchange.fetch_open_orders(test_symbol))
+            open_before = self._fetch_open_orders_with_types(test_symbol)
             result["steps"].append(f"Open orders BEFORE sweep: {len(open_before)}")
 
             # Step 5: Execute aggressive bracket cleanup
@@ -931,7 +1028,7 @@ class LiveExchangeAdapter:
             result["steps"].append(f"Aggressive cleanup executed: cancelled {cancelled} orders")
 
             # Step 6: Final verification — must be ZERO open orders
-            remaining = retry_ccxt_call(lambda: self.exchange.fetch_open_orders(test_symbol))
+            remaining = self._fetch_open_orders_with_types(test_symbol)
             remaining_count = len(remaining)
             result["steps"].append(f"Final verification: {remaining_count} open orders remaining")
 
@@ -984,7 +1081,7 @@ class DualModeExecutionEngine:
         initial_paper_equity: float = 100.0,
         wallet_path: Optional[Path] = None,
         pipeline: Optional[DataPipeline] = None,
-        model_version: str = "v1"
+        model_version: str = "v2"
     ):
         self.mode = mode.upper()
         if self.mode not in ["PAPER", "LIVE"]:
@@ -1193,6 +1290,10 @@ class DualModeExecutionEngine:
 
             if not open_positions:
                 # Absolute Ground Truth: Zero open positions on Binance!
+                # Sweep every order type before releasing the global trade lock.
+                # A failed fetch or cancellation must leave the persisted state
+                # open so the daemon retries cleanup on its next pass.
+                self.live_adapter.sweep_all_orphan_orders()
                 if stale_state.get("status") == "OPEN":
                     stale_sym = stale_state.get("symbol", "UNKNOWN")
                     logger.info(
@@ -1205,7 +1306,6 @@ class DualModeExecutionEngine:
                         {"purged_symbol": stale_sym}
                     )
                     self.save_active_trade({"status": "CLOSED"})
-                    self.live_adapter.sweep_all_orphan_orders()
                 elif ACTIVE_TRADE_PATH.exists() and stale_state.get("status") != "CLOSED":
                     self.save_active_trade({"status": "CLOSED"})
                 return None
@@ -1239,21 +1339,21 @@ class DualModeExecutionEngine:
             if sl_price is None or tp_price is None or sl_price <= 0 or tp_price <= 0:
                 # Compute default 1:3 RR bracket levels
                 sl_dist = entry_price * 0.02
-                tp_dist = entry_price * 0.06
-                if side == "LONG":
-                    sl_price = round(max(0.0001, entry_price - sl_dist), 4)
-                    tp_price = round(entry_price + tp_dist, 4)
-                else:
-                    sl_price = round(entry_price + sl_dist, 4)
-                    tp_price = round(max(0.0001, entry_price - tp_dist), 4)
+                limits = self.get_symbol_limits(real_sym)
+                bracket_entry, sl_price, tp_price, _ = calculate_bracket_prices(
+                    entry_price, sl_dist, side, tick_size=limits.get("tick_size")
+                )
+            else:
+                bracket_entry = float(stale_state.get("bracket_reference_price") or entry_price)
 
             verified_trade = {
                 "status": "OPEN",
                 "symbol": real_sym,
                 "direction": side,
-                "entry_price": round(entry_price, 4),
-                "stop_loss": round(sl_price, 4),
-                "take_profit": round(tp_price, 4),
+                "entry_price": entry_price,
+                "bracket_reference_price": bracket_entry,
+                "stop_loss": float(sl_price),
+                "take_profit": float(tp_price),
                 "risk_pct": round(self.risk_pct * 100.0, 1),
                 "suggested_position_size": pos_size,
                 "leverage": pos_leverage,
@@ -1444,6 +1544,10 @@ class DualModeExecutionEngine:
                 "passes_run": int(nuclear_res_raw.get("passes_run", 0)),
                 "verified_empty": bool(nuclear_res_raw.get("verified_empty", False))
             }
+            if not nuclear_res["verified_empty"]:
+                raise RuntimeError(
+                    f"Account-wide order cleanup could not verify an empty order book after closing {sym}"
+                )
             total_wiped = cancelled + nuclear_res["total_cancelled"]
             logger.info(
                 f"[NUCLEAR_RESET] Trade exit on {sym} triggered Nuclear Reset: "
@@ -1482,7 +1586,9 @@ class DualModeExecutionEngine:
             amount_min = limits.get("amount", {}).get("min")
             precision = market.get("precision", {})
             amount_step = precision.get("amount")
-            price_step = precision.get("price")
+            price_step = market_tick_size(
+                market, getattr(self.pipeline.exchange, "precisionMode", None)
+            )
 
             min_notional = float(cost_min) if cost_min is not None else 5.0
             min_qty = float(amount_min) if amount_min is not None else 0.001
@@ -1545,27 +1651,21 @@ class DualModeExecutionEngine:
 
         # Exact 5% risk calculation strictly on Account Equity
         dollar_risk = equity * self.risk_pct
-        sl_dist = 1.0 * atr_val
-        tp_dist = 3.0 * atr_val
-
-        if direction == "LONG":
-            stop_loss = max(0.0001, entry_price - sl_dist)
-            take_profit = entry_price + tp_dist
-        else:  # SHORT
-            stop_loss = entry_price + sl_dist
-            take_profit = max(0.0001, entry_price - tp_dist)
+        limits = self.get_symbol_limits(symbol)
+        entry_anchor, stop_loss, take_profit, sl_dist = calculate_bracket_prices(
+            entry_price, atr_val, direction, tick_size=limits.get("tick_size")
+        )
 
         # Size in coin units
         target_size = dollar_risk / sl_dist
 
         # Leverage coverage check: Ensure required margin does not exceed available equity
         max_notional = equity * max_leverage
-        max_allowed_coins = max_notional / entry_price
+        max_allowed_coins = max_notional / entry_anchor
         if target_size > max_allowed_coins:
             target_size = max_allowed_coins
 
         # Format size according to precision / step size
-        limits = self.get_symbol_limits(symbol)
         step = limits["step_size"]
         if step > 0:
             target_size = math.floor(target_size / step) * step
@@ -1575,20 +1675,25 @@ class DualModeExecutionEngine:
 
         target_size = max(0.0001, round(target_size, 4))
 
-        # Enforce exact 1:3 RR with tick size precision formatting
+        # Enforce exact 1:3 RR with exchange tick precision. The computed levels
+        # already lie on the tick grid; CCXT formatting is validated to ensure it
+        # does not collapse either side for low-priced contracts.
         try:
             exch = self.live_adapter.exchange if (self.live_adapter and hasattr(self.live_adapter, "exchange")) else getattr(self.pipeline, "exchange", None)
             if exch and hasattr(exch, "price_to_precision"):
                 stop_loss = float(exch.price_to_precision(symbol, stop_loss))
                 take_profit = float(exch.price_to_precision(symbol, take_profit))
-            else:
-                tick = limits.get("tick_size", 0.01)
-                decimals = max(0, -int(math.floor(math.log10(tick)))) if (tick and tick < 1) else 2
-                stop_loss = round(stop_loss, decimals)
-                take_profit = round(take_profit, decimals)
-        except Exception:
-            stop_loss = round(stop_loss, 4)
-            take_profit = round(take_profit, 4)
+            risk_distance = abs(entry_anchor - stop_loss)
+            reward_distance = abs(take_profit - entry_anchor)
+            if risk_distance <= 0 or abs(reward_distance / risk_distance - 3.0) > 1e-8:
+                raise ValueError(
+                    f"Price precision cannot represent a strict 1:3 bracket for {symbol} "
+                    f"({direction}: entry={entry_anchor}, SL={stop_loss}, TP={take_profit})"
+                )
+        except (ValueError, TypeError):
+            raise
+        except Exception as exc:
+            raise ValueError(f"Could not validate 1:3 bracket precision for {symbol}: {exc}") from exc
 
         return target_size, stop_loss, take_profit, dollar_risk
 
@@ -1647,19 +1752,15 @@ class DualModeExecutionEngine:
             # Model inference: purely data-driven without symbol favoritism
             if self.trainer.booster is not None or self.trainer.model is not None:
                 probs = self.trainer.predict_probabilities(merged)
-                prob_tp = float(probs[-1, 2])
-                prob_sl = float(probs[-1, 0])
+                direction, confidence = self.trainer.predict_directional_signal(probs[-1])
             else:
                 rsi = merged.iloc[-1].get("rsi_14", 50)
                 prob_tp = 0.40 if rsi > 50 else 0.20
                 prob_sl = 0.40 if rsi <= 50 else 0.20
-
-            if prob_tp >= prob_sl:
-                direction = "LONG"
-                confidence = prob_tp
-            else:
-                direction = "SHORT"
-                confidence = prob_sl
+                if prob_tp >= prob_sl:
+                    direction, confidence = "LONG", prob_tp
+                else:
+                    direction, confidence = "SHORT", prob_sl
 
             curr_bar = merged.iloc[-1]
             return {
@@ -1698,6 +1799,12 @@ class DualModeExecutionEngine:
         if atr_val <= 0 or np.isnan(atr_val):
             atr_val = entry_price * 0.01
 
+        trade_limits = self.get_symbol_limits(sym)
+        bracket_reference_price, strict_sl, strict_tp, _ = calculate_bracket_prices(
+            entry_price, atr_val, direction, tick_size=trade_limits.get("tick_size")
+        )
+        sl_price, tp_price = strict_sl, strict_tp
+
         # 1. Determine Symbol Max Leverage
         if max_lev is None:
             max_lev = self.get_symbol_max_leverage(sym)
@@ -1721,9 +1828,10 @@ class DualModeExecutionEngine:
             "symbol": sym,
             "direction": direction,
             "confidence": round(confidence, 4),
-            "entry_price": round(entry_price, 4),
-            "stop_loss": round(sl_price, 4),
-            "take_profit": round(tp_price, 4),
+            "entry_price": entry_price,
+            "bracket_reference_price": bracket_reference_price,
+            "stop_loss": float(sl_price),
+            "take_profit": float(tp_price),
             "risk_pct": round(self.risk_pct * 100.0, 1),
             "dollar_risk": round(dollar_risk, 4),
             "leverage": max_lev,
@@ -1731,12 +1839,6 @@ class DualModeExecutionEngine:
             "mode": self.mode,
             "status": "SIGNAL_GENERATED"
         }
-
-        # Save to latest_signal.json
-        tmp_signal_path = LATEST_SIGNAL_PATH.with_suffix(".tmp")
-        with open(tmp_signal_path, "w") as f:
-            json.dump(signal_payload, f, indent=2)
-        tmp_signal_path.replace(LATEST_SIGNAL_PATH)
 
         # 3. Mode Execution
         if self.mode == "PAPER" and self.paper_wallet:
@@ -1768,11 +1870,20 @@ class DualModeExecutionEngine:
                 tp_price = order_res["take_profit"]
                 signal_payload["stop_loss"] = sl_price
                 signal_payload["take_profit"] = tp_price
+                signal_payload["bracket_reference_price"] = order_res.get(
+                    "bracket_reference_price", entry_price
+                )
                 if "entry_price" in order_res and order_res["entry_price"] > 0:
                     entry_price = order_res["entry_price"]
                     signal_payload["entry_price"] = entry_price
             signal_payload["live_order_details"] = str(order_res.get("entry_order", {}))
             logger.info(f"[LIVE_ORDER] Executed {direction} on {sym} on Binance Futures.")
+
+        # Persist the final, filled entry and exchange-aligned bracket levels.
+        tmp_signal_path = LATEST_SIGNAL_PATH.with_suffix(".tmp")
+        with open(tmp_signal_path, "w") as f:
+            json.dump(signal_payload, f, indent=2)
+        tmp_signal_path.replace(LATEST_SIGNAL_PATH)
 
         # Persist Active State (Strict Global 1-Trade Rule)
         active_state = dict(signal_payload)
@@ -1857,13 +1968,30 @@ class DualModeExecutionEngine:
             max_lev = self.get_symbol_max_leverage(sym)
             limits = self.get_symbol_limits(sym)
 
-            pos_size, sl_price, tp_price, dollar_risk = self.calculate_5pct_risk_position(
-                symbol=sym,
-                entry_price=entry_price,
-                atr_val=atr_val,
-                direction=dir_,
-                max_leverage=max_lev
-            )
+            try:
+                pos_size, sl_price, tp_price, dollar_risk = self.calculate_5pct_risk_position(
+                    symbol=sym,
+                    entry_price=entry_price,
+                    atr_val=atr_val,
+                    direction=dir_,
+                    max_leverage=max_lev
+                )
+            except ValueError as exc:
+                leaderboard.append({
+                    "symbol": sym,
+                    "direction": dir_,
+                    "confidence": round(conf, 4),
+                    "atr": round(atr_val, 8),
+                    "entry_price": entry_price,
+                    "position_size": 0.0,
+                    "notional": 0.0,
+                    "leverage": max_lev,
+                    "min_notional": limits["min_notional"],
+                    "min_qty": limits["min_qty"],
+                    "status": "INVALID_BRACKET"
+                })
+                logger.info(f"[INVALID_BRACKET] Skipping {sym} {dir_}: {exc}")
+                continue
             notional = pos_size * entry_price
 
             item_status = "PENDING"

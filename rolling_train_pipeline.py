@@ -140,7 +140,7 @@ class RollingBatchPipeline:
         tp_atr_mult: float = 3.0,
         max_horizon_bars: int = 24,
         synthetic: bool = False,
-        model_version: str = "v1",
+        model_version: str = "v2",
         progress_callback=None
     ) -> Dict[str, Any]:
         """
@@ -336,6 +336,7 @@ class RollingBatchPipeline:
                     "feature_cols": feature_cols,
                     "label_map": {-1: 0, 0: 1, 1: 2},
                     "inv_label_map": {0: -1, 1: 0, 2: 1},
+                    "symmetric_directional": True,
                     "total_iterations": booster.current_iteration(),
                     "batches_completed": b_idx + 1
                 }, f, indent=2)

@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 
 from model import ModelTrainer
+from trading_rules import validate_rr_multipliers
 
 logger = logging.getLogger("Backtester")
 
@@ -91,23 +92,34 @@ class BacktestEngine:
         if df.empty or len(df) < 50:
             return {"error": "Insufficient data for backtest."}
 
+        validate_rr_multipliers(sl_atr_mult, tp_atr_mult)
+
         target_risk = risk_per_trade if risk_per_trade is not None else self.risk_per_trade
         df = df.copy().sort_values("timestamp").reset_index(drop=True)
 
-        # Generate ML entry signals if not present
-        if "prob_tp" not in df.columns:
-            trainer = model_trainer or ModelTrainer()
+        trainer = model_trainer or ModelTrainer()
+        # Build explicit LONG/SHORT probabilities. Class 0 is a short winner
+        # only for checkpoints trained with symmetric directional labels.
+        if "prob_long" not in df.columns and "prob_tp" in df.columns:
+            df["prob_long"] = df["prob_tp"]
+        if "prob_short" not in df.columns and "prob_sl" in df.columns and trainer.symmetric_directional:
+            df["prob_short"] = df["prob_sl"]
+
+        if "prob_long" not in df.columns:
             try:
                 probs = trainer.predict_probabilities(df)
-                df["prob_tp"] = probs[:, 2]
-                df["prob_sl"] = probs[:, 0]
+                df["prob_short"] = probs[:, 0] if trainer.symmetric_directional else 0.0
+                df["prob_long"] = probs[:, 2]
             except Exception as e:
-                logger.warning(f"ML Model inference not available, using trend crossover signals: {e}")
-                df["prob_tp"] = (
-                    (df.get("trend_bullish", 0) == 1) & 
-                    (df.get("rsi_14", 50) > 50) & 
-                    (df.get("macd_hist", 0) > 0)
-                ).astype(float) * 0.50
+                logger.warning(f"ML model inference unavailable; using directional trend signals: {e}")
+                bullish = df.get("trend_bullish", pd.Series(0, index=df.index)) == 1
+                bearish = df.get("trend_bearish", pd.Series(0, index=df.index)) == 1
+                rsi = df.get("rsi_14", pd.Series(50, index=df.index))
+                macd_hist = df.get("macd_hist", pd.Series(0, index=df.index))
+                df["prob_long"] = (bullish & (rsi > 50) & (macd_hist > 0)).astype(float) * 0.50
+                df["prob_short"] = (bearish & (rsi < 50) & (macd_hist < 0)).astype(float) * 0.50
+        if "prob_short" not in df.columns:
+            df["prob_short"] = 0.0
 
         n = len(df)
         timestamps = df["timestamp"].to_numpy()
@@ -116,7 +128,8 @@ class BacktestEngine:
         lows = df["low"].to_numpy()
         closes = df["close"].to_numpy()
         atrs = df["atr_14"].to_numpy() if "atr_14" in df.columns else (closes * 0.01)
-        prob_tp = df["prob_tp"].to_numpy()
+        prob_long = df["prob_long"].to_numpy()
+        prob_short = df["prob_short"].to_numpy()
 
         equity = float(self.initial_capital)
         trades: List[Trade] = []
@@ -147,6 +160,9 @@ class BacktestEngine:
 
                 tp_hit = c_high >= tp_price
                 sl_hit = c_low <= sl_price
+                if active_position["direction"] == "SHORT":
+                    tp_hit = c_low <= tp_price
+                    sl_hit = c_high >= sl_price
                 time_expired = holding_bars >= max_holding_bars
 
                 trade_closed = False
@@ -155,11 +171,11 @@ class BacktestEngine:
 
                 if tp_hit and not sl_hit:
                     trade_closed = True
-                    exit_price = tp_price * (1.0 - self.slippage)
+                    exit_price = tp_price * (1.0 - self.slippage if active_position["direction"] == "LONG" else 1.0 + self.slippage)
                     exit_reason = "TAKE_PROFIT"
                 elif sl_hit and not tp_hit:
                     trade_closed = True
-                    exit_price = sl_price * (1.0 - self.slippage)
+                    exit_price = sl_price * (1.0 - self.slippage if active_position["direction"] == "LONG" else 1.0 + self.slippage)
                     exit_reason = "STOP_LOSS"
                 elif tp_hit and sl_hit:
                     # Intra-candle conflict: resolve using open price proximity
@@ -167,18 +183,21 @@ class BacktestEngine:
                     dist_to_sl = abs(c_open - sl_price)
                     dist_to_tp = abs(c_open - tp_price)
                     if dist_to_sl <= dist_to_tp:
-                        exit_price = sl_price * (1.0 - self.slippage)
+                        exit_price = sl_price * (1.0 - self.slippage if active_position["direction"] == "LONG" else 1.0 + self.slippage)
                         exit_reason = "STOP_LOSS"
                     else:
-                        exit_price = tp_price * (1.0 - self.slippage)
+                        exit_price = tp_price * (1.0 - self.slippage if active_position["direction"] == "LONG" else 1.0 + self.slippage)
                         exit_reason = "TAKE_PROFIT"
                 elif time_expired:
                     trade_closed = True
-                    exit_price = c_close * (1.0 - self.slippage)
+                    exit_price = c_close * (1.0 - self.slippage if active_position["direction"] == "LONG" else 1.0 + self.slippage)
                     exit_reason = "TIME_EXPIRY"
 
                 if trade_closed:
-                    gross_pnl = (exit_price - entry_price) * pos_size
+                    signed_move = exit_price - entry_price
+                    if active_position["direction"] == "SHORT":
+                        signed_move = -signed_move
+                    gross_pnl = signed_move * pos_size
                     exit_notional = exit_price * pos_size
                     fees = (pos_value * entry_fee_rate) + (exit_notional * exit_fee_rate)
 
@@ -197,7 +216,7 @@ class BacktestEngine:
                         symbol=symbol,
                         entry_time=active_position["entry_time"],
                         exit_time=current_time,
-                        side="LONG",
+                        side=active_position["direction"],
                         entry_price=float(entry_price),
                         exit_price=float(exit_price),
                         tp_price=float(tp_price),
@@ -218,18 +237,26 @@ class BacktestEngine:
 
             # 2. Strict One Trade at a Time: check entry if no active position
             if active_position is None and i < n - 1 and equity > 5.0:
-                signal_strength = prob_tp[i]
+                direction = "LONG" if prob_long[i] >= prob_short[i] else "SHORT"
+                signal_strength = max(prob_long[i], prob_short[i])
                 if signal_strength >= confidence_threshold:
-                    entry_price = c_close * (1.0 + self.slippage)
+                    direction_sign = 1.0 if direction == "LONG" else -1.0
+                    entry_price = c_close * (1.0 + direction_sign * self.slippage)
                     atr_val = atrs[i]
                     if atr_val <= 0 or np.isnan(atr_val):
                         atr_val = entry_price * 0.01
 
                     # Dynamic ATR Barriers (Strict 1:3 RR)
                     sl_dist = sl_atr_mult * atr_val
-                    tp_dist = tp_atr_mult * atr_val
-                    sl_price = max(0.0001, entry_price - sl_dist)
-                    tp_price = entry_price + tp_dist
+                    tp_dist = 3.0 * sl_dist
+                    if direction == "LONG":
+                        sl_price = entry_price - sl_dist
+                        tp_price = entry_price + tp_dist
+                    else:
+                        if entry_price <= tp_dist:
+                            continue
+                        sl_price = entry_price + sl_dist
+                        tp_price = entry_price - tp_dist
 
                     # Compounding Position Sizing based on ATR Risk
                     # Dollar Risk = Equity * target_risk
@@ -248,6 +275,7 @@ class BacktestEngine:
                         "entry_bar": i,
                         "entry_time": current_time,
                         "entry_price": entry_price,
+                        "direction": direction,
                         "tp_price": tp_price,
                         "sl_price": sl_price,
                         "pos_size": pos_size,
@@ -257,7 +285,8 @@ class BacktestEngine:
 
             # Mark-to-market equity point
             if active_position is not None:
-                unrealized_pnl = (c_close - active_position["entry_price"]) * active_position["pos_size"]
+                direction_sign = 1.0 if active_position["direction"] == "LONG" else -1.0
+                unrealized_pnl = direction_sign * (c_close - active_position["entry_price"]) * active_position["pos_size"]
                 current_equity = max(0.0, equity + unrealized_pnl)
             else:
                 current_equity = equity

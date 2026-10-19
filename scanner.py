@@ -24,6 +24,7 @@ from data_pipeline import DataPipeline, desanitize_filename_to_symbol
 from features import FeatureEngineer
 from model import ModelTrainer
 from backtester import Trade
+from trading_rules import validate_rr_multipliers
 
 logger = logging.getLogger("GlobalUniverseScanner")
 
@@ -83,17 +84,19 @@ class GlobalUniverseScanner:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
                 df = df.sort_values("timestamp").reset_index(drop=True)
 
-                # Generate model probability predictions if not already present
-                if "prob_tp" not in df.columns:
-                    try:
-                        probs = trainer.predict_probabilities(df)
-                        df["prob_tp"] = probs[:, 2]
-                        df["prob_sl"] = probs[:, 0]
-                    except Exception:
-                        df["prob_tp"] = (
-                            (df.get("trend_bullish", 0) == 1) & 
-                            (df.get("rsi_14", 50) > 50)
-                        ).astype(float) * 0.45
+                # Always refresh both directional outputs. Old cached prob_sl
+                # values may represent a long stop-loss rather than a short win.
+                try:
+                    probs = trainer.predict_probabilities(df)
+                    df["prob_long"] = probs[:, 2]
+                    df["prob_short"] = probs[:, 0] if trainer.symmetric_directional else 0.0
+                except Exception:
+                    bullish = df.get("trend_bullish", pd.Series(0, index=df.index)) == 1
+                    bearish = df.get("trend_bearish", pd.Series(0, index=df.index)) == 1
+                    rsi = df.get("rsi_14", pd.Series(50, index=df.index))
+                    macd_hist = df.get("macd_hist", pd.Series(0, index=df.index))
+                    df["prob_long"] = (bullish & (rsi > 50) & (macd_hist > 0)).astype(float) * 0.45
+                    df["prob_short"] = (bearish & (rsi < 50) & (macd_hist < 0)).astype(float) * 0.45
 
                 universe_dfs[sym] = df
             except Exception as e:
@@ -123,6 +126,8 @@ class GlobalUniverseScanner:
         if not universe_dfs:
             return {"error": "No universe feature datasets available for global scan."}
 
+        validate_rr_multipliers(sl_atr_mult, tp_atr_mult)
+
         target_risk = risk_per_trade if risk_per_trade is not None else self.risk_per_trade
 
         # Fast timestamp indexing across all symbols
@@ -130,12 +135,19 @@ class GlobalUniverseScanner:
         all_timestamps_set = set()
 
         for sym, df in universe_dfs.items():
+            if "prob_long" not in df.columns:
+                df = df.copy()
+                df["prob_long"] = df.get("prob_tp", pd.Series(0.0, index=df.index))
+            if "prob_short" not in df.columns:
+                df = df.copy()
+                # Legacy prob_sl is deliberately not treated as a short win.
+                df["prob_short"] = 0.0
             ts_series = df["timestamp"].tolist()
             all_timestamps_set.update(ts_series)
             
             # Map timestamp -> row dict for fast O(1) access
             records = df[[
-                "timestamp", "open", "high", "low", "close", "atr_14", "prob_tp"
+                "timestamp", "open", "high", "low", "close", "atr_14", "prob_long", "prob_short"
             ]].to_dict("records")
             symbol_lookups[sym] = {r["timestamp"]: r for r in records}
 
@@ -171,8 +183,13 @@ class GlobalUniverseScanner:
                     pos_value = active_trade["pos_value"]
                     risk_dollars = active_trade["risk_dollars"]
 
-                    tp_hit = c_high >= tp_price
-                    sl_hit = c_low <= sl_price
+                    direction = active_trade["direction"]
+                    if direction == "LONG":
+                        tp_hit = c_high >= tp_price
+                        sl_hit = c_low <= sl_price
+                    else:
+                        tp_hit = c_low <= tp_price
+                        sl_hit = c_high >= sl_price
                     time_expired = holding_bars >= max_holding_bars
 
                     trade_closed = False
@@ -181,29 +198,32 @@ class GlobalUniverseScanner:
 
                     if tp_hit and not sl_hit:
                         trade_closed = True
-                        exit_price = tp_price * (1.0 - self.slippage)
+                        exit_price = tp_price * (1.0 - self.slippage if direction == "LONG" else 1.0 + self.slippage)
                         exit_reason = "TAKE_PROFIT"
                     elif sl_hit and not tp_hit:
                         trade_closed = True
-                        exit_price = sl_price * (1.0 - self.slippage)
+                        exit_price = sl_price * (1.0 - self.slippage if direction == "LONG" else 1.0 + self.slippage)
                         exit_reason = "STOP_LOSS"
                     elif tp_hit and sl_hit:
                         trade_closed = True
                         dist_to_sl = abs(c_open - sl_price)
                         dist_to_tp = abs(c_open - tp_price)
                         if dist_to_sl <= dist_to_tp:
-                            exit_price = sl_price * (1.0 - self.slippage)
+                            exit_price = sl_price * (1.0 - self.slippage if direction == "LONG" else 1.0 + self.slippage)
                             exit_reason = "STOP_LOSS"
                         else:
-                            exit_price = tp_price * (1.0 - self.slippage)
+                            exit_price = tp_price * (1.0 - self.slippage if direction == "LONG" else 1.0 + self.slippage)
                             exit_reason = "TAKE_PROFIT"
                     elif time_expired:
                         trade_closed = True
-                        exit_price = c_close * (1.0 - self.slippage)
+                        exit_price = c_close * (1.0 - self.slippage if direction == "LONG" else 1.0 + self.slippage)
                         exit_reason = "TIME_EXPIRY"
 
                     if trade_closed:
-                        gross_pnl = (exit_price - entry_price) * pos_size
+                        signed_move = exit_price - entry_price
+                        if direction == "SHORT":
+                            signed_move = -signed_move
+                        gross_pnl = signed_move * pos_size
                         exit_notional = exit_price * pos_size
                         fees = (pos_value * self.taker_fee) + (exit_notional * self.maker_fee)
 
@@ -220,7 +240,7 @@ class GlobalUniverseScanner:
                             symbol=sym,
                             entry_time=active_trade["entry_time"],
                             exit_time=current_time,
-                            side="LONG",
+                            side=direction,
                             entry_price=float(entry_price),
                             exit_price=float(exit_price),
                             tp_price=float(tp_price),
@@ -249,7 +269,9 @@ class GlobalUniverseScanner:
                 for sym, lookup in symbol_lookups.items():
                     bar = lookup.get(current_time)
                     if bar is not None:
-                        conf = bar.get("prob_tp", 0.0)
+                        long_conf = float(bar.get("prob_long", 0.0) or 0.0)
+                        short_conf = float(bar.get("prob_short", 0.0) or 0.0)
+                        conf = max(long_conf, short_conf)
                         if conf >= confidence_threshold and conf > best_confidence:
                             best_confidence = conf
                             best_symbol = sym
@@ -262,11 +284,19 @@ class GlobalUniverseScanner:
                     if atr_val <= 0 or np.isnan(atr_val):
                         atr_val = c_close * 0.01
 
-                    entry_price = c_close * (1.0 + self.slippage)
+                    direction = "LONG" if float(best_bar.get("prob_long", 0.0) or 0.0) >= float(best_bar.get("prob_short", 0.0) or 0.0) else "SHORT"
+                    direction_sign = 1.0 if direction == "LONG" else -1.0
+                    entry_price = c_close * (1.0 + direction_sign * self.slippage)
                     sl_dist = sl_atr_mult * atr_val
-                    tp_dist = tp_atr_mult * atr_val
-                    sl_price = max(0.0001, entry_price - sl_dist)
-                    tp_price = entry_price + tp_dist
+                    tp_dist = 3.0 * sl_dist
+                    if direction == "LONG":
+                        sl_price = entry_price - sl_dist
+                        tp_price = entry_price + tp_dist
+                    else:
+                        if entry_price <= tp_dist:
+                            continue
+                        sl_price = entry_price + sl_dist
+                        tp_price = entry_price - tp_dist
 
                     dollar_risk = equity * target_risk
                     pos_size = dollar_risk / sl_dist
@@ -283,6 +313,7 @@ class GlobalUniverseScanner:
                         "entry_timeline_idx": t_idx,
                         "entry_time": current_time,
                         "entry_price": entry_price,
+                        "direction": direction,
                         "tp_price": tp_price,
                         "sl_price": sl_price,
                         "pos_size": pos_size,
@@ -296,7 +327,8 @@ class GlobalUniverseScanner:
                 sym = active_trade["symbol"]
                 curr_bar = symbol_lookups.get(sym, {}).get(current_time)
                 if curr_bar is not None:
-                    unrealized = (curr_bar["close"] - active_trade["entry_price"]) * active_trade["pos_size"]
+                    direction_sign = 1.0 if active_trade["direction"] == "LONG" else -1.0
+                    unrealized = direction_sign * (curr_bar["close"] - active_trade["entry_price"]) * active_trade["pos_size"]
                     curr_eq = max(0.0, equity + unrealized)
                 else:
                     curr_eq = equity

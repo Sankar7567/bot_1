@@ -2,8 +2,8 @@
 ML Labeling & LightGBM Training Engine.
 
 Features:
-- Triple-Barrier Method labeling with dynamic ATR barriers enforcing strict 1:3 Risk-Reward ratio:
-  Stop-Loss (1.0 * ATR) and Take-Profit (3.0 * ATR). Rows labeled as 1 (Hit TP), -1 (Hit SL), 0 (Time Exit).
+- Triple-Barrier Method labeling with dynamic ATR barriers enforcing strict 1:3 Risk-Reward ratio.
+  Symmetric labels are -1 (short winner), 0 (neutral), and 1 (long winner).
 - High-performance vectorized / NumPy barrier evaluation.
 - Global LightGBM cross-asset training across 500+ pairs to learn universal structural market dynamics.
 - Purged Walk-Forward Cross-Validation with temporal embargo buffers to strictly eliminate data leakage.
@@ -26,6 +26,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 from data_pipeline import DataPipeline, sanitize_symbol_for_filename
 from features import FeatureEngineer
+from trading_rules import select_directional_signal, validate_rr_multipliers
 
 logger = logging.getLogger("ModelEngine")
 
@@ -48,6 +49,7 @@ def apply_triple_barrier_labeling(
     This eliminates the short-only mean-reversion bias by treating Long and Short
     breakout momentum symmetrically without structural probability distortion.
     """
+    validate_rr_multipliers(sl_atr_mult, tp_atr_mult)
     df = df.copy().reset_index(drop=True)
     n = len(df)
     
@@ -174,12 +176,13 @@ class ModelTrainer:
         self,
         models_dir: str = "models",
         pipeline: Optional[DataPipeline] = None,
-        model_version: str = "v1"
+        model_version: str = "v2"
     ):
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.pipeline = pipeline or DataPipeline()
         self.model_version = model_version
+        self.symmetric_directional = model_version.lower() in ("v2", "2")
         self.feature_cols: List[str] = []
         self.model: Optional[lgb.LGBMClassifier] = None
         self.booster: Optional[lgb.Booster] = None
@@ -244,6 +247,7 @@ class ModelTrainer:
         Loads engineered features across multiple symbols, applies Triple-Barrier labeling,
         and aggregates into a unified global cross-asset dataset.
         """
+        self.symmetric_directional = bool(symmetric_directional)
         fe = FeatureEngineer(self.pipeline)
         feat_dir = self.pipeline.features_dir / timeframe
         
@@ -311,7 +315,7 @@ class ModelTrainer:
         self.feature_cols = self.get_feature_columns(df)
         logger.info(f"Training LightGBM model with {len(self.feature_cols)} features...")
 
-        # Mapping labels [-1, 0, 1] -> [0, 1, 2] for LightGBM multiclass
+        # Mapping labels [short, neutral, long] -> [0, 1, 2] for LightGBM.
         label_map = {-1: 0, 0: 1, 1: 2}
         inv_label_map = {0: -1, 1: 0, 2: 1}
         
@@ -399,6 +403,9 @@ class ModelTrainer:
             best_model.fit(X, y)
 
         self.model = best_model
+        # Training labels produced by the current feature pipeline use the
+        # symmetric short/neutral/long semantics unless the caller explicitly
+        # loaded a legacy dataset before training.
         if hasattr(best_model, "booster_"):
             self.booster = best_model.booster_
         
@@ -475,6 +482,7 @@ class ModelTrainer:
                 "feature_cols": self.feature_cols,
                 "label_map": {-1: 0, 0: 1, 1: 2},
                 "inv_label_map": {0: -1, 1: 0, 2: 1},
+                "symmetric_directional": self.symmetric_directional,
                 "model_version": version or self.model_version
             }, f, indent=2)
         logger.info(f"Saved model and metadata to {model_path}")
@@ -490,6 +498,7 @@ class ModelTrainer:
                         "feature_cols": self.feature_cols,
                         "label_map": {-1: 0, 1: 2, 0: 1},
                         "inv_label_map": {0: -1, 1: 0, 2: 1},
+                        "symmetric_directional": self.symmetric_directional,
                         "model_version": "v1"
                     }, f, indent=2)
 
@@ -513,6 +522,9 @@ class ModelTrainer:
         with open(meta_path, "r") as f:
             meta = json.load(f)
             self.feature_cols = meta.get("feature_cols", [])
+            self.symmetric_directional = bool(
+                meta.get("symmetric_directional", resolved == "lightgbm_crypto_model_v2")
+            )
 
         booster = lgb.Booster(model_file=str(model_path))
         self.booster = booster
@@ -532,7 +544,9 @@ class ModelTrainer:
 
     def predict_probabilities(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Generates class probabilities [P(SL), P(TIME), P(TP)] for input DataFrame.
+        Generates class probabilities for input rows. Symmetric v2 outputs are
+        [P(short winner), P(neutral), P(long winner)]; legacy v1 uses
+        [P(long stop), P(neutral), P(long target)].
         """
         if self.model is None and self.booster is None:
             if not self.load_model():
@@ -549,6 +563,10 @@ class ModelTrainer:
             return self.model._Booster.predict(X)
         else:
             return self.model.predict_proba(X)
+
+    def predict_directional_signal(self, probabilities: np.ndarray) -> Tuple[str, float]:
+        """Map model outputs to a side using the checkpoint's label semantics."""
+        return select_directional_signal(probabilities, self.symmetric_directional)
 
     def filter_high_liquidity_subsets(
         self,
