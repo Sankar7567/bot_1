@@ -98,17 +98,15 @@ class BacktestEngine:
         df = df.copy().sort_values("timestamp").reset_index(drop=True)
 
         trainer = model_trainer or ModelTrainer()
-        # Build explicit LONG/SHORT probabilities. Class 0 is a short winner
-        # only for checkpoints trained with symmetric directional labels.
-        if "prob_long" not in df.columns and "prob_tp" in df.columns:
-            df["prob_long"] = df["prob_tp"]
-        if "prob_short" not in df.columns and "prob_sl" in df.columns and trainer.symmetric_directional:
-            df["prob_short"] = df["prob_sl"]
+        # Only an explicit pair of directional columns is trusted. If either
+        # side is missing, refresh both from the same model prediction so a
+        # stale legacy prob_tp/prob_sl value cannot bias side selection.
+        explicit_directional = "prob_long" in df.columns and "prob_short" in df.columns
 
-        if "prob_long" not in df.columns:
+        if not explicit_directional:
             try:
                 probs = trainer.predict_probabilities(df)
-                df["prob_short"] = probs[:, 0] if trainer.symmetric_directional else 0.0
+                df["prob_short"] = probs[:, 0] if trainer.supports_short_trades else 0.0
                 df["prob_long"] = probs[:, 2]
             except Exception as e:
                 logger.warning(f"ML model inference unavailable; using directional trend signals: {e}")

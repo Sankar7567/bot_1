@@ -175,13 +175,13 @@ Labels are encoded as:
 
 ### Multi-Model Versioning Architecture (`v1` vs `v2`)
 The platform supports side-by-side versioned model checkpoints:
-- **`v1` (Legacy Baseline):** Trained on 75 original multi-timeframe momentum, volume, and volatility indicators. Older checkpoints use class 0 for a long stop-loss, so that output is never interpreted as a short entry.
+- **`v1` (Preferred Checkpoint):** Uses the original 69-feature schema and existing weights. Runtime compares class 0 as the SHORT-side downside score with class 2 as the LONG-side upside score.
   - Weights: `models/lightgbm_crypto_model_v1.txt` (and backward-compatible `models/lightgbm_crypto_model.txt`)
   - Schema: `models/lightgbm_crypto_model_v1_metadata.json`
 - **`v2` (Trend-Following):** Trained on 111 features incorporating ADX, multi-period EMA slopes, and MACD continuation indicators, paired with symmetric directional triple-barrier labeling (class 0 = short win, class 2 = long win).
   - Weights: `models/lightgbm_crypto_model_v2.txt`
   - Schema: `models/lightgbm_crypto_model_v2_metadata.json`
-- **Switching:** Controlled via CLI `--model v1` / `--model v2` and Streamlit sidebar radio toggle. Trading defaults to v2 so both sides are eligible.
+- **Switching:** Controlled via CLI `--model v1` / `--model v2` and Streamlit sidebar radio toggle. Trading defaults to v1 and compares its downside and upside scores so either side can be selected.
 
 ### Purged Walk-Forward Cross-Validation
 - Multi-fold temporal splits preserving chronological order.
@@ -505,4 +505,4 @@ python -m unittest tests/test_platform.py -v
 | 34 | `test_34_precise_1_to_3_rr_and_tick_precision` | Fill-anchored 1:3 brackets with exchange precision |
 | 35 | `test_35_low_price_tick_rr_and_bidirectional_class_mapping` | Low-price tick-aligned RR and correct v1/v2 direction semantics |
 | 36 | `test_36_order_fetch_errors_do_not_report_cleanup_success` | Cleanup verification fails closed when order fetch fails |
-| 37 | `test_37_short_positions_work_in_single_and_global_backtests` | Single and global backtests manage short entries and exits |
+| 37 | `test_37_long_and_short_positions_work_in_single_and_global_backtests` | Single and global backtests manage both sides with strict 1:3 RR |

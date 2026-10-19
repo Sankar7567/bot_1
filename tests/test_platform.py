@@ -153,7 +153,9 @@ class TestCryptoMLPlatform(unittest.TestCase):
         cv_results = trainer.train_walk_forward_cv(agg_df, n_splits=2, embargo_pct=0.01)
         self.assertIn("mean_accuracy", cv_results)
         self.assertIn("mean_precision_tp", cv_results)
-        self.assertTrue((Path("test_models") / "lightgbm_crypto_model.txt").exists())
+        self.assertTrue((Path("test_models") / "lightgbm_crypto_model_v1.txt").exists())
+        v1_schema = json.loads(Path("models/lightgbm_crypto_model_v1_metadata.json").read_text())["feature_cols"]
+        self.assertEqual(trainer.feature_cols, v1_schema)
 
         probs = trainer.predict_probabilities(df_feat)
         self.assertEqual(probs.shape, (len(df_feat), 3))
@@ -222,6 +224,13 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
         self.assertEqual(res["status"], "SUCCESS")
         self.assertEqual(res["total_batches"], 2)
+        trained_schema = json.loads(
+            Path("test_models/lightgbm_crypto_model_v1_metadata.json").read_text()
+        )["feature_cols"]
+        expected_schema = json.loads(
+            Path("models/lightgbm_crypto_model_v1_metadata.json").read_text()
+        )["feature_cols"]
+        self.assertEqual(trained_schema, expected_schema)
         # Check that raw parquet files for the batch were deleted
         raw_files = list((rolling.pipeline.raw_dir).rglob("*.parquet"))
         self.assertEqual(len(raw_files), 0, "Raw Parquet files were not purged after batch processing!")
@@ -298,12 +307,22 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
     def test_12_precise_5pct_risk_sizing_and_leverage(self):
         """Verify exact 5% risk calculation strictly against Account Equity."""
+        from unittest.mock import MagicMock
+
         engine = DualModeExecutionEngine(
             mode="PAPER",
             risk_pct=0.05,
             confidence_threshold=0.35,
             initial_paper_equity=2.0  # $2 test balance from prompt example
         )
+        engine.pipeline = MagicMock()
+        engine.pipeline.exchange.price_to_precision.side_effect = lambda _sym, price: f"{price:.2f}"
+        engine.get_symbol_limits = MagicMock(return_value={
+            "min_notional": 5.0,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.01,
+        })
         
         # Sizing formula: $2 balance, 5% risk = $0.10 dollar risk.
         # ATR = $2.0, entry = $100, max leverage = 50x
@@ -361,23 +380,34 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
     def test_15_dynamic_limits_and_sub_minimum_skipping(self):
         """Verify engine skips sub-minimum trades and selects next valid top setup without crashing."""
+        from unittest.mock import MagicMock
+
         test_wallet = Path("test_skip_wallet.json")
         engine = DualModeExecutionEngine(
             mode="PAPER",
             risk_pct=0.05,
             confidence_threshold=0.30,
-            initial_paper_equity=100.0,
+            initial_paper_equity=2.0,
             wallet_path=test_wallet,
             pipeline=self.pipeline
         )
+        engine.pipeline = MagicMock()
+        engine.pipeline.exchange.price_to_precision.side_effect = lambda _sym, price: f"{price:.5f}"
+        engine.get_symbol_limits = MagicMock(return_value={
+            "min_notional": 5.0,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.00001,
+        })
+        engine.get_symbol_max_leverage = MagicMock(return_value=50)
         engine.save_active_trade({"status": "CLOSED"})
 
         # Mock evaluate_symbol_for_entry to simulate 2 candidates:
-        # Cand 1: High confidence (0.85), but tiny price ($0.001) causing notional < $5 minNotional
+        # Cand 1: High confidence (0.85), but tiny notional below $5 minNotional
         # Cand 2: Lower confidence (0.65), standard price ($100) satisfying minNotional
         cand_tiny = {
             "symbol": "TINY/USDT:USDT",
-            "bar": pd.Series({"close": 0.001, "atr_14": 0.005}),
+            "bar": pd.Series({"close": 0.001, "atr_14": 0.0005}),
             "direction": "LONG",
             "confidence": 0.85
         }
@@ -416,6 +446,8 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
     def test_16_pure_ml_probability_ranking_and_progress_callback(self):
         """Verify candidate ranking strictly follows raw ML probability and triggers progress callback."""
+        from unittest.mock import MagicMock
+
         test_wallet = Path("test_rank_wallet.json")
         engine = DualModeExecutionEngine(
             mode="PAPER",
@@ -424,6 +456,15 @@ class TestCryptoMLPlatform(unittest.TestCase):
             wallet_path=test_wallet,
             pipeline=self.pipeline
         )
+        engine.pipeline = MagicMock()
+        engine.pipeline.exchange.price_to_precision.side_effect = lambda _sym, price: f"{price:.2f}"
+        engine.get_symbol_limits = MagicMock(return_value={
+            "min_notional": 5.0,
+            "min_qty": 0.001,
+            "step_size": 0.001,
+            "tick_size": 0.01,
+        })
+        engine.get_symbol_max_leverage = MagicMock(return_value=50)
         engine.save_active_trade({"status": "CLOSED"})
 
         cands = [
@@ -952,10 +993,10 @@ class TestCryptoMLPlatform(unittest.TestCase):
         trainer_v1 = ModelTrainer(model_version="v1")
         trainer_v2 = ModelTrainer(model_version="v2")
 
-        # v1 resolves to either the v1 file or the legacy fallback
+        # v1 must keep resolving to the existing checkpoint and feature schema.
         resolved_v1 = trainer_v1.resolve_model_name(version="v1")
-        self.assertIn(resolved_v1, ("lightgbm_crypto_model_v1", "lightgbm_crypto_model"),
-                      "v1 must resolve to versioned or legacy filename")
+        self.assertEqual(resolved_v1, "lightgbm_crypto_model_v1",
+                         "v1 must resolve to the existing v1 checkpoint")
 
         # v2 must always resolve to the v2 specific filename
         resolved_v2 = trainer_v2.resolve_model_name(version="v2")
@@ -963,14 +1004,20 @@ class TestCryptoMLPlatform(unittest.TestCase):
                          "v2 must resolve to lightgbm_crypto_model_v2")
 
         # Explicit model_name shorthand overrides
-        self.assertIn(trainer_v1.resolve_model_name(model_name="v1"),
-                      ("lightgbm_crypto_model_v1", "lightgbm_crypto_model"))
+        self.assertEqual(trainer_v1.resolve_model_name(model_name="v1"),
+                         "lightgbm_crypto_model_v1")
         self.assertEqual(trainer_v1.resolve_model_name(model_name="v2"),
                          "lightgbm_crypto_model_v2")
 
         # Ensure model_version attribute is stored correctly
         self.assertEqual(trainer_v1.model_version, "v1")
         self.assertEqual(trainer_v2.model_version, "v2")
+
+        v1_schema = json.loads(Path("models/lightgbm_crypto_model_v1_metadata.json").read_text())["feature_cols"]
+        v2_schema = json.loads(Path("models/lightgbm_crypto_model_v2_metadata.json").read_text())["feature_cols"]
+        schema_frame = pd.DataFrame(columns=sorted(set(v1_schema + v2_schema)))
+        self.assertEqual(trainer_v1.get_training_feature_columns(schema_frame), v1_schema)
+        self.assertEqual(trainer_v2.get_training_feature_columns(schema_frame), v2_schema)
 
     def test_29_adx_and_trend_features_present(self):
         """
@@ -1064,6 +1111,13 @@ class TestCryptoMLPlatform(unittest.TestCase):
         v2_model_path = test_models_dir / "lightgbm_crypto_model_v2.txt"
         self.assertTrue(v2_model_path.exists(),
                         f"v2 model file must exist at {v2_model_path} after training")
+        v2_schema = json.loads(
+            (test_models_dir / "lightgbm_crypto_model_v2_metadata.json").read_text()
+        )["feature_cols"]
+        expected_v2_schema = json.loads(
+            Path("models/lightgbm_crypto_model_v2_metadata.json").read_text()
+        )["feature_cols"]
+        self.assertEqual(v2_schema, expected_v2_schema)
 
         # v1 file must NOT have been created in test dir (no cross-contamination)
         v1_model_path = test_models_dir / "lightgbm_crypto_model_v1.txt"
@@ -1273,7 +1327,7 @@ class TestCryptoMLPlatform(unittest.TestCase):
         self.assertAlmostEqual((tp - 3000.0) / (3000.0 - sl), 3.0, places=5)
 
     def test_35_low_price_tick_rr_and_bidirectional_class_mapping(self):
-        """Low-priced contracts retain exact 1:3 brackets, and both v2 sides work."""
+        """Low-priced contracts retain exact 1:3 brackets, and v1 selects either side."""
         from unittest.mock import MagicMock
         from trading_rules import calculate_bracket_prices, select_directional_signal
 
@@ -1292,10 +1346,15 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
         self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], True), ("SHORT", 0.80))
         self.assertEqual(select_directional_signal([0.10, 0.10, 0.80], True), ("LONG", 0.80))
-        # Legacy class 0 means a long stop-loss, so it must never be opened as short.
+        # The helper can ignore class 0 for the strictly legacy interpretation.
         self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], False), ("LONG", 0.10))
-        self.assertTrue(ModelTrainer().symmetric_directional)
-        self.assertFalse(ModelTrainer(model_version="v1").symmetric_directional)
+        trainer_default = ModelTrainer()
+        self.assertEqual(trainer_default.model_version, "v1")
+        self.assertFalse(trainer_default.symmetric_directional)
+        self.assertTrue(trainer_default.supports_short_trades)
+        self.assertEqual(trainer_default.predict_directional_signal([0.80, 0.10, 0.10]), ("SHORT", 0.80))
+        self.assertEqual(trainer_default.predict_directional_signal([0.10, 0.10, 0.80]), ("LONG", 0.80))
+        self.assertFalse(ModelTrainer(model_version="v1_legacy").symmetric_directional)
 
         engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
         engine.mode = "PAPER"
@@ -1334,60 +1393,65 @@ class TestCryptoMLPlatform(unittest.TestCase):
         with patch("execution.time.sleep"), self.assertRaises(RuntimeError):
             adapter.cancel_all_orders_for_symbol("BTC/USDT:USDT")
 
-    def test_37_short_positions_work_in_single_and_global_backtests(self):
-        """Both backtest engines consume short probabilities and close shorts correctly."""
+    def test_37_long_and_short_positions_work_in_single_and_global_backtests(self):
+        """Both backtest engines follow the stronger v1 side and close either direction."""
         timestamps = pd.date_range("2026-01-01", periods=50, freq="5min", tz="UTC")
-        frame = pd.DataFrame({
-            "timestamp": timestamps,
-            "open": 100.0,
-            "high": 100.2,
-            "low": 99.8,
-            "close": 100.0,
-            "atr_14": 1.0,
-            "prob_long": 0.0,
-            "prob_short": 0.0,
-        })
-        frame.loc[0, "prob_short"] = 0.9
-        frame.loc[1, "low"] = 96.8
+        for direction in ("LONG", "SHORT"):
+            with self.subTest(direction=direction):
+                frame = pd.DataFrame({
+                    "timestamp": timestamps,
+                    "open": 100.0,
+                    "high": 100.2,
+                    "low": 99.8,
+                    "close": 100.0,
+                    "atr_14": 1.0,
+                    "prob_long": 0.9 if direction == "LONG" else 0.0,
+                    "prob_short": 0.9 if direction == "SHORT" else 0.0,
+                })
+                if direction == "LONG":
+                    frame.loc[1, "high"] = 103.2
+                else:
+                    frame.loc[1, "low"] = 96.8
 
-        single = BacktestEngine(
-            initial_capital=1000.0,
-            risk_per_trade=0.03,
-            max_leverage=100.0,
-            slippage_bps=0.0,
-        ).run_backtest(frame, confidence_threshold=0.35)
-        self.assertFalse(single["trades"].empty)
-        trade = single["trades"].iloc[0]
-        self.assertEqual(trade["side"], "SHORT")
-        self.assertEqual(trade["exit_reason"], "TAKE_PROFIT")
-        self.assertAlmostEqual(
-            (trade["entry_price"] - trade["tp_price"]) /
-            (trade["sl_price"] - trade["entry_price"]),
-            3.0,
-            places=8,
-        )
+                single = BacktestEngine(
+                    initial_capital=1000.0,
+                    risk_per_trade=0.03,
+                    max_leverage=100.0,
+                    slippage_bps=0.0,
+                ).run_backtest(frame, confidence_threshold=0.35)
+                self.assertFalse(single["trades"].empty)
+                trade = single["trades"].iloc[0]
+                self.assertEqual(trade["side"], direction)
+                self.assertEqual(trade["exit_reason"], "TAKE_PROFIT")
+                if direction == "LONG":
+                    rr = (trade["tp_price"] - trade["entry_price"]) / (trade["entry_price"] - trade["sl_price"])
+                else:
+                    rr = (trade["entry_price"] - trade["tp_price"]) / (trade["sl_price"] - trade["entry_price"])
+                self.assertAlmostEqual(rr, 3.0, places=8)
 
-        global_frame = frame.iloc[:3].copy()
-        global_result = GlobalUniverseScanner(
-            initial_capital=1000.0,
-            risk_per_trade=0.03,
-            max_leverage=100.0,
-            slippage_bps=0.0,
-            pipeline=self.pipeline,
-        ).run_global_backtest(
-            universe_dfs={"TEST/USDT:USDT": global_frame},
-            confidence_threshold=0.35,
-        )
-        self.assertFalse(global_result["trades"].empty)
-        global_trade = global_result["trades"].iloc[0]
-        self.assertEqual(global_trade["side"], "SHORT")
-        self.assertEqual(global_trade["exit_reason"], "TAKE_PROFIT")
-        self.assertAlmostEqual(
-            (global_trade["entry_price"] - global_trade["tp_price"]) /
-            (global_trade["sl_price"] - global_trade["entry_price"]),
-            3.0,
-            places=8,
-        )
+                global_result = GlobalUniverseScanner(
+                    initial_capital=1000.0,
+                    risk_per_trade=0.03,
+                    max_leverage=100.0,
+                    slippage_bps=0.0,
+                    pipeline=self.pipeline,
+                ).run_global_backtest(
+                    universe_dfs={"TEST/USDT:USDT": frame.iloc[:3].copy()},
+                    confidence_threshold=0.35,
+                )
+                self.assertFalse(global_result["trades"].empty)
+                global_trade = global_result["trades"].iloc[0]
+                self.assertEqual(global_trade["side"], direction)
+                self.assertEqual(global_trade["exit_reason"], "TAKE_PROFIT")
+                if direction == "LONG":
+                    global_rr = (global_trade["tp_price"] - global_trade["entry_price"]) / (
+                        global_trade["entry_price"] - global_trade["sl_price"]
+                    )
+                else:
+                    global_rr = (global_trade["entry_price"] - global_trade["tp_price"]) / (
+                        global_trade["sl_price"] - global_trade["entry_price"]
+                    )
+                self.assertAlmostEqual(global_rr, 3.0, places=8)
 
 
 if __name__ == "__main__":

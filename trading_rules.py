@@ -7,17 +7,18 @@ from typing import Optional, Sequence, Tuple
 
 def select_directional_signal(
     probabilities: Sequence[float],
-    symmetric_directional: bool = True,
+    allow_short_score: bool = True,
 ) -> Tuple[str, float]:
-    """Select a side from class probabilities ordered as short, neutral, long.
+    """Select the stronger side from a three-class model output.
 
-    Legacy checkpoints use class 0 for a losing long barrier, not a short win.
-    For those checkpoints only class 2 can produce an actionable direction.
+    When allowed, class 0 is used as a short-side/downside score and class 2
+    as the long-side/upside score. Set allow_short_score=False to treat class 0
+    strictly as a legacy long-stop class and only permit class 2 LONG signals.
     """
     if len(probabilities) < 3:
         raise ValueError("Expected three class probabilities: short, neutral, long")
 
-    short_probability = float(probabilities[0]) if symmetric_directional else 0.0
+    short_probability = float(probabilities[0]) if allow_short_score else 0.0
     long_probability = float(probabilities[2])
     if not isfinite(short_probability) or not isfinite(long_probability):
         raise ValueError("Directional probabilities must be finite")

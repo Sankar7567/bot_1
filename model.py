@@ -176,13 +176,18 @@ class ModelTrainer:
         self,
         models_dir: str = "models",
         pipeline: Optional[DataPipeline] = None,
-        model_version: str = "v2"
+        model_version: str = "v1"
     ):
         self.models_dir = Path(models_dir)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.pipeline = pipeline or DataPipeline()
         self.model_version = model_version
         self.symmetric_directional = model_version.lower() in ("v2", "2")
+        # v1's class 0 is a bearish/downside proxy for SHORT selection, while
+        # class 2 is its long-target score. v2 has a directly trained short win.
+        self.supports_short_trades = model_version.lower() in (
+            "v1", "1", "v1_legacy", "legacy_v1", "v2", "2"
+        )
         self.feature_cols: List[str] = []
         self.model: Optional[lgb.LGBMClassifier] = None
         self.booster: Optional[lgb.Booster] = None
@@ -190,7 +195,8 @@ class ModelTrainer:
     def resolve_model_name(self, model_name: Optional[str] = None, version: Optional[str] = None) -> str:
         """
         Resolves the concrete model file basename taking versioning into account.
-        - version 'v1' -> 'lightgbm_crypto_model_v1' (or 'lightgbm_crypto_model')
+        - version 'v1' -> 'lightgbm_crypto_model_v1' (or legacy base model)
+        - version 'v1_legacy' -> the preserved legacy single-direction checkpoint
         - version 'v2' -> 'lightgbm_crypto_model_v2'
         - custom model_name -> stem of that name
         """
@@ -199,6 +205,8 @@ class ModelTrainer:
             clean = model_name.lower().strip()
             if clean in ("v1", "1"):
                 ver = "v1"
+            elif clean in ("v1_legacy", "legacy_v1"):
+                ver = "v1_legacy"
             elif clean in ("v2", "2"):
                 ver = "v2"
             elif clean in ("lightgbm_crypto_model", "lightgbm_crypto_model_v1", "lightgbm_crypto_model_v2"):
@@ -221,6 +229,14 @@ class ModelTrainer:
             if legacy_file.exists():
                 return "lightgbm_crypto_model"
             return "lightgbm_crypto_model_v1"
+        elif ver in ("v1_legacy", "legacy_v1"):
+            v1_file = self.models_dir / "lightgbm_crypto_model_v1.txt"
+            if v1_file.exists():
+                return "lightgbm_crypto_model_v1"
+            legacy_file = self.models_dir / "lightgbm_crypto_model.txt"
+            if legacy_file.exists():
+                return "lightgbm_crypto_model"
+            return "lightgbm_crypto_model_v1"
         elif ver in ("v2", "2"):
             return "lightgbm_crypto_model_v2"
         return f"lightgbm_crypto_model_{ver}"
@@ -233,6 +249,42 @@ class ModelTrainer:
         }
         return [c for c in df.columns if c not in exclude and not c.startswith("_")]
 
+    def get_training_feature_columns(
+        self, df: pd.DataFrame, version: Optional[str] = None
+    ) -> List[str]:
+        """Use the selected checkpoint's feature schema when one is available."""
+        resolved = self.resolve_model_name(version=version)
+        metadata_names = [f"{resolved}_metadata.json"]
+        if resolved in ("lightgbm_crypto_model_v1", "lightgbm_crypto_model"):
+            metadata_names.append("lightgbm_crypto_model_metadata.json")
+
+        model_roots = [self.models_dir, Path(__file__).resolve().parent / "models"]
+        schema: List[str] = []
+        for root in model_roots:
+            for metadata_name in metadata_names:
+                metadata_path = root / metadata_name
+                if not metadata_path.exists():
+                    continue
+                try:
+                    with open(metadata_path, "r") as f:
+                        schema = json.load(f).get("feature_cols", [])
+                except (OSError, json.JSONDecodeError):
+                    schema = []
+                if schema:
+                    break
+            if schema:
+                break
+
+        if not schema:
+            return self.get_feature_columns(df)
+
+        missing = [column for column in schema if column not in df.columns]
+        if missing:
+            raise ValueError(
+                f"Training data for {resolved} is missing checkpoint features: {missing[:10]}"
+            )
+        return list(schema)
+
     def load_aggregated_dataset(
         self,
         symbols: Optional[List[str]] = None,
@@ -241,12 +293,14 @@ class ModelTrainer:
         tp_atr_mult: float = 3.0,
         max_holding_bars: int = 24,
         max_samples_per_symbol: Optional[int] = 50000,
-        symmetric_directional: bool = True
+        symmetric_directional: Optional[bool] = None
     ) -> pd.DataFrame:
         """
         Loads engineered features across multiple symbols, applies Triple-Barrier labeling,
         and aggregates into a unified global cross-asset dataset.
         """
+        if symmetric_directional is None:
+            symmetric_directional = self.model_version.lower() in ("v2", "2")
         self.symmetric_directional = bool(symmetric_directional)
         fe = FeatureEngineer(self.pipeline)
         feat_dir = self.pipeline.features_dir / timeframe
@@ -278,7 +332,7 @@ class ModelTrainer:
                     sl_atr_mult=sl_atr_mult,
                     tp_atr_mult=tp_atr_mult,
                     max_holding_bars=max_holding_bars,
-                    symmetric_directional=symmetric_directional
+                    symmetric_directional=self.symmetric_directional
                 )
 
                 if max_samples_per_symbol and len(labeled_df) > max_samples_per_symbol:
@@ -302,7 +356,9 @@ class ModelTrainer:
         embargo_pct: float = 0.01,
         params: Optional[Dict[str, Any]] = None,
         save_as: Optional[str] = None,
-        version: Optional[str] = None
+        version: Optional[str] = None,
+        signal_confidence_threshold: float = 0.35,
+        early_stopping_rounds: Optional[int] = 30
     ) -> Dict[str, Any]:
         """
         Executes Purged Walk-Forward Cross-Validation across time-series folds:
@@ -312,7 +368,7 @@ class ModelTrainer:
         if df.empty:
             raise ValueError("Aggregated dataset is empty.")
 
-        self.feature_cols = self.get_feature_columns(df)
+        self.feature_cols = self.get_training_feature_columns(df, version=version)
         logger.info(f"Training LightGBM model with {len(self.feature_cols)} features...")
 
         # Mapping labels [short, neutral, long] -> [0, 1, 2] for LightGBM.
@@ -367,18 +423,32 @@ class ModelTrainer:
                 continue
 
             clf = lgb.LGBMClassifier(**default_params)
-            clf.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                callbacks=[lgb.early_stopping(stopping_rounds=30, verbose=False)]
-            )
+            fit_kwargs = {}
+            if early_stopping_rounds is not None:
+                fit_kwargs = {
+                    "eval_set": [(X_test, y_test)],
+                    "callbacks": [lgb.early_stopping(
+                        stopping_rounds=early_stopping_rounds, verbose=False
+                    )],
+                }
+            clf.fit(X_train, y_train, **fit_kwargs)
 
             preds = clf.predict(X_test)
             probs = clf.predict_proba(X_test)
 
-            # Precision on Take-Profit class (class 2) is critical for 1:3 RR
-            prec_tp = precision_score(y_test, preds, labels=[2], average="micro", zero_division=0)
+            # Score the same decision rule used live: choose whichever
+            # directional probability is higher, then apply the confidence gate.
+            short_is_best = probs[:, 0] > probs[:, 2]
+            long_is_best = ~short_is_best
+            short_signals = short_is_best & (probs[:, 0] >= signal_confidence_threshold)
+            long_signals = long_is_best & (probs[:, 2] >= signal_confidence_threshold)
+            prec_short = (
+                float(np.mean(y_test[short_signals] == 0)) if short_signals.any() else 0.0
+            )
+            prec_long = (
+                float(np.mean(y_test[long_signals] == 2)) if long_signals.any() else 0.0
+            )
+            prec_directional = (prec_short + prec_long) / 2.0
             acc = accuracy_score(y_test, preds)
             f1 = f1_score(y_test, preds, average="macro", zero_division=0)
 
@@ -386,28 +456,42 @@ class ModelTrainer:
                 "fold": fold + 1,
                 "train_samples": len(X_train),
                 "test_samples": len(X_test),
+                "best_iteration": int(getattr(clf, "best_iteration_", 0) or default_params["n_estimators"]),
                 "accuracy": float(acc),
-                "precision_tp": float(prec_tp),
+                "precision_short": float(prec_short),
+                "precision_long": float(prec_long),
+                "precision_directional": float(prec_directional),
+                "precision_tp": float(prec_long),
+                "short_signal_coverage": float(short_signals.mean()),
+                "long_signal_coverage": float(long_signals.mean()),
                 "f1_macro": float(f1)
             }
             fold_metrics.append(metric)
-            logger.info(f"Fold {fold+1}/{n_splits} - Acc: {acc:.4f}, TP Precision: {prec_tp:.4f}, F1: {f1:.4f}")
+            logger.info(
+                f"Fold {fold+1}/{n_splits} - Acc: {acc:.4f}, Short Precision: {prec_short:.4f}, "
+                f"Long Precision: {prec_long:.4f}, Directional Precision: {prec_directional:.4f}, "
+                f"Coverage S/L: {short_signals.mean():.3f}/{long_signals.mean():.3f}, F1: {f1:.4f}"
+            )
 
-            if prec_tp > best_score:
-                best_score = prec_tp
+            if prec_directional > best_score:
+                best_score = prec_directional
                 best_model = clf
 
-        # Retrain on full dataset for production deployment if best model was selected
-        if best_model is None:
-            best_model = lgb.LGBMClassifier(**default_params)
-            best_model.fit(X, y)
+        # Use the strongest fold's stopping point, then fit the production
+        # checkpoint on all available rows rather than shipping a partial fold.
+        final_params = dict(default_params)
+        if best_model is not None:
+            best_iteration = int(getattr(best_model, "best_iteration_", 0) or default_params["n_estimators"])
+            final_params["n_estimators"] = max(1, best_iteration)
+        final_model = lgb.LGBMClassifier(**final_params)
+        final_model.fit(X, y)
 
-        self.model = best_model
+        self.model = final_model
         # Training labels produced by the current feature pipeline use the
         # symmetric short/neutral/long semantics unless the caller explicitly
         # loaded a legacy dataset before training.
-        if hasattr(best_model, "booster_"):
-            self.booster = best_model.booster_
+        if hasattr(final_model, "booster_"):
+            self.booster = final_model.booster_
         
         target_name = save_as or (f"lightgbm_crypto_model_{version}" if version else None)
         self.save_model(model_name=target_name, version=version)
@@ -416,6 +500,9 @@ class ModelTrainer:
             "n_splits": len(fold_metrics),
             "mean_accuracy": float(np.mean([m["accuracy"] for m in fold_metrics])) if fold_metrics else 0.0,
             "mean_precision_tp": float(np.mean([m["precision_tp"] for m in fold_metrics])) if fold_metrics else 0.0,
+            "mean_precision_short": float(np.mean([m["precision_short"] for m in fold_metrics])) if fold_metrics else 0.0,
+            "mean_precision_long": float(np.mean([m["precision_long"] for m in fold_metrics])) if fold_metrics else 0.0,
+            "mean_precision_directional": float(np.mean([m["precision_directional"] for m in fold_metrics])) if fold_metrics else 0.0,
             "mean_f1_macro": float(np.mean([m["f1_macro"] for m in fold_metrics])) if fold_metrics else 0.0,
             "fold_details": fold_metrics,
             "feature_importance": self.get_feature_importance()
@@ -508,13 +595,14 @@ class ModelTrainer:
         model_path = self.models_dir / f"{resolved}.txt"
         meta_path = self.models_dir / f"{resolved}_metadata.json"
 
-        # Graceful fallback for v1 if specific v1 not on disk yet
+        # Graceful fallback for v1 if the versioned file is not on disk yet.
         if not model_path.exists() and "v1" in resolved:
             fallback = self.models_dir / "lightgbm_crypto_model.txt"
             fallback_meta = self.models_dir / "lightgbm_crypto_model_metadata.json"
             if fallback.exists() and fallback_meta.exists():
                 model_path = fallback
                 meta_path = fallback_meta
+                resolved = "lightgbm_crypto_model"
 
         if not model_path.exists() or not meta_path.exists():
             return False
@@ -523,7 +611,17 @@ class ModelTrainer:
             meta = json.load(f)
             self.feature_cols = meta.get("feature_cols", [])
             self.symmetric_directional = bool(
-                meta.get("symmetric_directional", resolved == "lightgbm_crypto_model_v2")
+                meta.get(
+                    "symmetric_directional",
+                    resolved == "lightgbm_crypto_model_v2",
+                )
+            )
+            # The preserved v1 checkpoint's class 0 is used as the existing
+            # downside/short-side proxy, and class 2 is the long score.
+            self.supports_short_trades = resolved in (
+                "lightgbm_crypto_model_v1",
+                "lightgbm_crypto_model",
+                "lightgbm_crypto_model_v2",
             )
 
         booster = lgb.Booster(model_file=str(model_path))
@@ -544,9 +642,10 @@ class ModelTrainer:
 
     def predict_probabilities(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Generates class probabilities for input rows. Symmetric v2 outputs are
+        Generates class probabilities for input rows. v2 outputs are
         [P(short winner), P(neutral), P(long winner)]; legacy v1 uses
-        [P(long stop), P(neutral), P(long target)].
+        [P(long stop), P(neutral), P(long target)]. The v1 execution policy
+        compares class 0 as a downside/short-side proxy against class 2.
         """
         if self.model is None and self.booster is None:
             if not self.load_model():
@@ -566,7 +665,7 @@ class ModelTrainer:
 
     def predict_directional_signal(self, probabilities: np.ndarray) -> Tuple[str, float]:
         """Map model outputs to a side using the checkpoint's label semantics."""
-        return select_directional_signal(probabilities, self.symmetric_directional)
+        return select_directional_signal(probabilities, allow_short_score=self.supports_short_trades)
 
     def filter_high_liquidity_subsets(
         self,

@@ -82,13 +82,13 @@ st.markdown("""
 
 
 @st.cache_resource
-def get_platform_components(model_version: str = "v2"):
+def get_platform_components(model_version: str = "v1"):
     """Initializes and caches platform singletons for the selected model version."""
     pipeline = DataPipeline()
     feature_engineer = FeatureEngineer(pipeline)
     trainer = ModelTrainer(pipeline=pipeline, model_version=model_version)
     trainer.load_model(version=model_version)
-    scanner = GlobalUniverseScanner(pipeline=pipeline)
+    scanner = GlobalUniverseScanner(pipeline=pipeline, model_version=model_version)
     return pipeline, feature_engineer, trainer, scanner
 
 
@@ -101,9 +101,9 @@ st.sidebar.subheader("🤖 Model Version")
 model_version_sel = st.sidebar.radio(
     "Active Model",
     ["v1", "v2"],
-    index=1,
+    index=0,
     help=(
-        "**v1** — Legacy baseline checkpoint; class 0 represents a long stop, so it cannot signal shorts. "
+        "**v1** — Preferred original checkpoint. Compares class 0 downside score for SHORT with class 2 upside score for LONG. "
         "**v2** — Symmetric directional checkpoint with ADX, EMA slopes & MACD continuation; supports long and short entries."
     )
 )

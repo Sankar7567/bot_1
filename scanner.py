@@ -39,7 +39,8 @@ class GlobalUniverseScanner:
         taker_fee: float = 0.0005,
         funding_rate_8h: float = 0.0001,
         slippage_bps: float = 1.0,
-        pipeline: Optional[DataPipeline] = None
+        pipeline: Optional[DataPipeline] = None,
+        model_version: str = "v1"
     ):
         self.initial_capital = initial_capital
         self.risk_per_trade = risk_per_trade
@@ -49,6 +50,29 @@ class GlobalUniverseScanner:
         self.funding_rate_8h = funding_rate_8h
         self.slippage = slippage_bps / 10000.0
         self.pipeline = pipeline or DataPipeline()
+        self.model_version = model_version
+
+    @staticmethod
+    def _with_directional_scores(
+        df: pd.DataFrame, trainer: ModelTrainer, force_refresh: bool = False
+    ) -> pd.DataFrame:
+        """Return a frame with a fresh, matched LONG/SHORT score pair."""
+        if not force_refresh and "prob_long" in df.columns and "prob_short" in df.columns:
+            return df
+
+        scored = df.copy()
+        try:
+            probs = trainer.predict_probabilities(scored)
+            scored["prob_long"] = probs[:, 2]
+            scored["prob_short"] = probs[:, 0] if trainer.supports_short_trades else 0.0
+        except Exception:
+            bullish = scored.get("trend_bullish", pd.Series(0, index=scored.index)) == 1
+            bearish = scored.get("trend_bearish", pd.Series(0, index=scored.index)) == 1
+            rsi = scored.get("rsi_14", pd.Series(50, index=scored.index))
+            macd_hist = scored.get("macd_hist", pd.Series(0, index=scored.index))
+            scored["prob_long"] = (bullish & (rsi > 50) & (macd_hist > 0)).astype(float) * 0.45
+            scored["prob_short"] = (bearish & (rsi < 50) & (macd_hist < 0)).astype(float) * 0.45
+        return scored
 
     def load_universe_feature_datasets(
         self,
@@ -68,8 +92,8 @@ class GlobalUniverseScanner:
         feature_files = list(feat_dir.glob("*.parquet"))
         universe_dfs: Dict[str, pd.DataFrame] = {}
 
-        trainer = ModelTrainer(pipeline=self.pipeline)
-        trainer.load_model()
+        trainer = ModelTrainer(pipeline=self.pipeline, model_version=self.model_version)
+        trainer.load_model(version=self.model_version)
 
         for f in feature_files[:max_symbols]:
             sym = desanitize_filename_to_symbol(f.name)
@@ -84,19 +108,9 @@ class GlobalUniverseScanner:
                 df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
                 df = df.sort_values("timestamp").reset_index(drop=True)
 
-                # Always refresh both directional outputs. Old cached prob_sl
-                # values may represent a long stop-loss rather than a short win.
-                try:
-                    probs = trainer.predict_probabilities(df)
-                    df["prob_long"] = probs[:, 2]
-                    df["prob_short"] = probs[:, 0] if trainer.symmetric_directional else 0.0
-                except Exception:
-                    bullish = df.get("trend_bullish", pd.Series(0, index=df.index)) == 1
-                    bearish = df.get("trend_bearish", pd.Series(0, index=df.index)) == 1
-                    rsi = df.get("rsi_14", pd.Series(50, index=df.index))
-                    macd_hist = df.get("macd_hist", pd.Series(0, index=df.index))
-                    df["prob_long"] = (bullish & (rsi > 50) & (macd_hist > 0)).astype(float) * 0.45
-                    df["prob_short"] = (bearish & (rsi < 50) & (macd_hist < 0)).astype(float) * 0.45
+                # Always refresh the pair together. A cached legacy prob_sl is
+                # not a short score and cannot be mixed with fresh inference.
+                df = self._with_directional_scores(df, trainer, force_refresh=True)
 
                 universe_dfs[sym] = df
             except Exception as e:
@@ -133,15 +147,14 @@ class GlobalUniverseScanner:
         # Fast timestamp indexing across all symbols
         symbol_lookups: Dict[str, Dict[pd.Timestamp, Dict[str, Any]]] = {}
         all_timestamps_set = set()
+        trainer = None
 
         for sym, df in universe_dfs.items():
-            if "prob_long" not in df.columns:
-                df = df.copy()
-                df["prob_long"] = df.get("prob_tp", pd.Series(0.0, index=df.index))
-            if "prob_short" not in df.columns:
-                df = df.copy()
-                # Legacy prob_sl is deliberately not treated as a short win.
-                df["prob_short"] = 0.0
+            if "prob_long" not in df.columns or "prob_short" not in df.columns:
+                if trainer is None:
+                    trainer = ModelTrainer(pipeline=self.pipeline, model_version=self.model_version)
+                    trainer.load_model(version=self.model_version)
+                df = self._with_directional_scores(df, trainer)
             ts_series = df["timestamp"].tolist()
             all_timestamps_set.update(ts_series)
             

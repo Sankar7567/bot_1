@@ -140,7 +140,7 @@ class RollingBatchPipeline:
         tp_atr_mult: float = 3.0,
         max_horizon_bars: int = 24,
         synthetic: bool = False,
-        model_version: str = "v2",
+        model_version: str = "v1",
         progress_callback=None
     ) -> Dict[str, Any]:
         """
@@ -166,7 +166,8 @@ class RollingBatchPipeline:
         batches = [symbols[i * batch_size : (i + 1) * batch_size] for i in range(num_batches)]
 
         clean_ver = model_version.lower().strip()
-        model_name = "lightgbm_crypto_model_v2" if clean_ver in ("v2", "2") else "lightgbm_crypto_model_v1"
+        symmetric_directional = clean_ver in ("v2", "2")
+        model_name = "lightgbm_crypto_model_v2" if symmetric_directional else "lightgbm_crypto_model_v1"
 
         log_audit(
             f"Initiating accelerated rolling-batch training for {num_symbols} symbols in {num_batches} batches "
@@ -179,7 +180,7 @@ class RollingBatchPipeline:
         booster = None
         feature_cols: List[str] = []
 
-        if not model_path.exists() and clean_ver in ("v1", "1"):
+        if not model_path.exists() and clean_ver in ("v1", "1", "v1_legacy", "legacy_v1"):
             legacy_model = self.models_dir / "lightgbm_crypto_model.txt"
             legacy_meta = self.models_dir / "lightgbm_crypto_model_metadata.json"
             if legacy_model.exists() and legacy_meta.exists():
@@ -268,7 +269,8 @@ class RollingBatchPipeline:
                             feat_df,
                             sl_atr_mult=sl_atr_mult,
                             tp_atr_mult=tp_atr_mult,
-                            max_holding_bars=max_horizon_bars
+                            max_holding_bars=max_horizon_bars,
+                            symmetric_directional=symmetric_directional
                         )
                         if len(labeled_df) > 10000:
                             labeled_df = labeled_df.iloc[-10000:]
@@ -301,11 +303,19 @@ class RollingBatchPipeline:
 
             # Identify feature columns
             if not feature_cols:
-                exclude = {
-                    "timestamp", "open", "high", "low", "close", "volume",
-                    "symbol", "label", "exit_bar", "barrier_return", "fold"
-                }
-                feature_cols = [c for c in batch_dataset.columns if c not in exclude and not c.startswith("_")]
+                schema_trainer = ModelTrainer(
+                    models_dir=str(self.models_dir),
+                    pipeline=self.pipeline,
+                    model_version=clean_ver,
+                )
+                feature_cols = schema_trainer.get_training_feature_columns(
+                    batch_dataset, version=clean_ver
+                )
+            missing_features = [column for column in feature_cols if column not in batch_dataset.columns]
+            if missing_features:
+                raise ValueError(
+                    f"Rolling batch is missing {model_name} checkpoint features: {missing_features[:10]}"
+                )
 
             label_map = {-1: 0, 0: 1, 1: 2}
             y_batch = batch_dataset["label"].map(label_map).to_numpy()
@@ -336,7 +346,7 @@ class RollingBatchPipeline:
                     "feature_cols": feature_cols,
                     "label_map": {-1: 0, 0: 1, 1: 2},
                     "inv_label_map": {0: -1, 1: 0, 2: 1},
-                    "symmetric_directional": True,
+                    "symmetric_directional": symmetric_directional,
                     "total_iterations": booster.current_iteration(),
                     "batches_completed": b_idx + 1
                 }, f, indent=2)

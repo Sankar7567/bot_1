@@ -74,7 +74,7 @@ class LiveSignalGenerator:
         sl_atr_mult: float = 1.0,
         tp_atr_mult: float = 3.0,
         pipeline: Optional[DataPipeline] = None,
-        model_version: str = "v2"
+        model_version: str = "v1"
     ):
         self.pipeline = pipeline or DataPipeline()
         self.fe = FeatureEngineer(self.pipeline)

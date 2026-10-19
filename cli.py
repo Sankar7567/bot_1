@@ -52,7 +52,7 @@ def rolling_train(
     max_storage_gb: float = typer.Option(18.0, "--max-storage-gb", help="Strict disk ceiling threshold in GB"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols list"),
     synthetic: bool = typer.Option(False, "--synthetic", help="Use realistic synthetic data for fast local verification"),
-    model_version: str = typer.Option("v2", "--model-version", "--model", "-v", help="Model version to train: 'v1' (legacy baseline) or 'v2' (symmetric directional)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to train: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
 ):
     """
     Ingests, engineers features for, and trains LightGBM on batches of symbols,
@@ -89,7 +89,7 @@ def optimize_risk(
     risks: str = typer.Option("0.02,0.03,0.05", "--risks", "-r", help="Comma-separated risk fractions to test"),
     capital: float = typer.Option(100.0, "--capital", "-c", help="Starting compounding capital in USD"),
     threshold: float = typer.Option(0.35, "--threshold", help="ML probability threshold"),
-    model_version: str = typer.Option("v2", "--model-version", "--model", "-v", help="Model version to evaluate: 'v1' (legacy long-only) or 'v2' (long/short)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to evaluate: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
 ):
     """
     Backtests and compares 2%, 3%, and 5% account risk per trade compounding from $100 starting balance.
@@ -200,7 +200,7 @@ def live_scan(
     risk: float = typer.Option(0.03, "--risk", "-r", help="Risk fraction per trade (default 3%)"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated active symbols to poll"),
     daemon: bool = typer.Option(False, "--daemon", "-d", help="Run in continuous polling loop"),
-    model_version: str = typer.Option("v2", "--model-version", "--model", "-v", help="Model version to use: 'v1' (legacy long-only) or 'v2' (long/short)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
 ):
     """
     Polls real-time Binance Futures candles via CCXT, runs LightGBM inference,
@@ -363,7 +363,9 @@ def train_model(
     table.add_column("Train Samples", justify="right")
     table.add_column("Test Samples", justify="right")
     table.add_column("Accuracy", justify="right")
-    table.add_column("TP Precision", justify="right")
+    table.add_column("Short Precision", justify="right")
+    table.add_column("Long Precision", justify="right")
+    table.add_column("Directional", justify="right")
     table.add_column("F1 Macro", justify="right")
 
     for f in results.get("fold_details", []):
@@ -372,15 +374,19 @@ def train_model(
             str(f["train_samples"]),
             str(f["test_samples"]),
             f"{f['accuracy']:.4f}",
+            f"{f['precision_short']:.4f}",
             f"{f['precision_tp']:.4f}",
+            f"{f['precision_directional']:.4f}",
             f"{f['f1_macro']:.4f}"
         )
 
     console.print(table)
     console.print(f"Mean Accuracy: [bold]{results['mean_accuracy']:.4f}[/bold]")
-    console.print(f"Mean Take-Profit Precision: [bold green]{results['mean_precision_tp']:.4f}[/bold green]")
+    console.print(f"Mean Short Precision: [bold]{results['mean_precision_short']:.4f}[/bold]")
+    console.print(f"Mean Long Precision: [bold]{results['mean_precision_long']:.4f}[/bold]")
+    console.print(f"Mean Directional Precision: [bold green]{results['mean_precision_directional']:.4f}[/bold green]")
     console.print(f"Mean Macro F1: [bold]{results['mean_f1_macro']:.4f}[/bold]")
-    console.print("[bold green]Model trained and weights saved to models/lightgbm_crypto_model.txt[/bold green]")
+    console.print(f"[bold green]Model trained and weights saved to models/{trainer.resolve_model_name()}.txt[/bold green]")
 
 
 @app.command()
@@ -396,7 +402,7 @@ def backtest(
     taker_fee: float = typer.Option(0.0005, "--taker-fee", help="Taker fee (0.05% = 0.0005)"),
     maker_fee: float = typer.Option(0.0002, "--maker-fee", help="Maker fee (0.02% = 0.0002)"),
     funding_rate_8h: float = typer.Option(0.0001, "--funding-rate", help="8h Funding rate (0.01% = 0.0001)"),
-    model_version: str = typer.Option("v2", "--model-version", "--model", "-v", help="Model version to use: 'v1' (legacy long-only) or 'v2' (long/short)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
 ):
     """
     Runs strict one-trade-at-a-time backtest with dynamic ATR risk sizing and compounding equity.
@@ -501,7 +507,7 @@ def execute(
     monitor_interval: int = typer.Option(30, "--monitor-interval", help="Active trade monitoring interval in seconds (default 30s)"),
     daemon: bool = typer.Option(False, "--daemon", "-d", help="Run continuously in bulletproof 24/7 background daemon loop"),
     iterations: Optional[int] = typer.Option(None, "--iterations", help="Maximum iterations to run if in daemon mode"),
-    model_version: str = typer.Option("v2", "--model-version", "--model", "-v", help="Model version to use: 'v1' (legacy long-only) or 'v2' (long/short)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
 ):
     """
     Executes trades in PAPER or LIVE mode on Binance Futures.

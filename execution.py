@@ -1081,7 +1081,7 @@ class DualModeExecutionEngine:
         initial_paper_equity: float = 100.0,
         wallet_path: Optional[Path] = None,
         pipeline: Optional[DataPipeline] = None,
-        model_version: str = "v2"
+        model_version: str = "v1"
     ):
         self.mode = mode.upper()
         if self.mode not in ["PAPER", "LIVE"]:

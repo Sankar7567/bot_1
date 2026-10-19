@@ -38,8 +38,8 @@ bot/
 │   ├── raw/{tf}/{sym}.parquet
 │   └── features/{tf}/{sym}.parquet
 └── models/
-    ├── lightgbm_crypto_model_v1.txt           # v1 Legacy long-only baseline weights
-    ├── lightgbm_crypto_model_v1_metadata.json # v1 Feature schema (75 features)
+    ├── lightgbm_crypto_model_v1.txt           # Preferred v1 weights (69 features)
+    ├── lightgbm_crypto_model_v1_metadata.json # v1 Feature schema
     ├── lightgbm_crypto_model_v2.txt           # v2 Symmetric long/short model weights
     └── lightgbm_crypto_model_v2_metadata.json # v2 Feature schema (111 features)
 ```
@@ -125,7 +125,7 @@ python cli.py execute --mode live --daemon --poll-interval 15 --monitor-interval
 The daemon runs **infinitely without crashing**, cycling seamlessly through:
 `Universal Scanning -> Global Best-Trade Selection -> Order Execution -> 30-Second Active Trade Monitoring -> Closure Sweep & Cleanup -> Infinite Re-Scanning`.
 
-Trading commands default to **v2**, which labels short winners as class 0 and long winners as class 2. The legacy `v1` checkpoint was trained with class 0 as a long stop-loss; it can still produce long signals, but its class 0 output is never submitted as a short.
+Trading commands default to the existing **v1 checkpoint and feature architecture**. The signal selector compares its class 0 downside score for SHORT with class 2 upside score for LONG and takes the stronger side. v2 remains available as the separately trained symmetric directional model.
 
 Live brackets use a strict **1:3 risk-reward ratio** after price-tick alignment. The stop distance rounds outward to the next valid tick, the target is set to exactly three times that distance, and a symbol is skipped if a positive target cannot be represented.
 
@@ -286,6 +286,6 @@ The **37-test suite** covers:
 | 32 | Data Pagination | Five-year ingestion paginates until the exchange returns no more candles |
 | 33 | Nuclear Reset | Regular and conditional open orders are cleared and verified |
 | 34 | Precise 1:3 Brackets | Fill-anchored long brackets preserve 1:3 RR at exchange precision |
-| 35 | Low-Price RR and Direction Mapping | Tick-aligned brackets and v2 long/short class mapping; v1 stop-loss class is not a short |
+| 35 | Low-Price RR and Direction Mapping | Tick-aligned brackets and v1/v2 selection of the stronger short-side or long-side score |
 | 36 | Conditional Order Cleanup | Binance conditional algo orders are canceled and fetch errors fail closed |
-| 37 | Short Backtests | Single-symbol and global backtests open, manage, and close short positions |
+| 37 | Bidirectional Backtests | Single-symbol and global backtests open and close both LONG and SHORT positions at strict 1:3 RR |
