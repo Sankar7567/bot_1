@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from model import ModelTrainer
-from trading_rules import validate_rr_multipliers
+from trading_rules import directional_probability_scores, validate_rr_multipliers
 
 logger = logging.getLogger("Backtester")
 
@@ -106,8 +106,14 @@ class BacktestEngine:
         if not explicit_directional:
             try:
                 probs = trainer.predict_probabilities(df)
-                df["prob_short"] = probs[:, 0] if trainer.supports_short_trades else 0.0
-                df["prob_long"] = probs[:, 2]
+                scores = [
+                    directional_probability_scores(
+                        probability, allow_short_score=trainer.supports_short_trades
+                    )
+                    for probability in probs
+                ]
+                df["prob_long"] = [long_score for long_score, _ in scores]
+                df["prob_short"] = [short_score for _, short_score in scores]
             except Exception as e:
                 logger.warning(f"ML model inference unavailable; using directional trend signals: {e}")
                 bullish = df.get("trend_bullish", pd.Series(0, index=df.index)) == 1

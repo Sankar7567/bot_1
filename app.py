@@ -103,12 +103,18 @@ model_version_sel = st.sidebar.radio(
     ["v1", "v2"],
     index=0,
     help=(
-        "**v1** — Preferred original checkpoint. Compares class 0 downside score for SHORT with class 2 upside score for LONG. "
-        "**v2** — Symmetric directional checkpoint with ADX, EMA slopes & MACD continuation; supports long and short entries."
+        "**v1** — Preferred original 69-feature architecture; the current checkpoint can select either side, and the training loop now uses symmetric SHORT/LONG 1:3 labels. "
+        "**v2** — Newer 111-feature architecture, also trained for both directions."
     )
 )
 
 pipeline, fe, trainer, scanner = get_platform_components(model_version_sel)
+if model_version_sel == "v1" and not trainer.symmetric_directional:
+    st.sidebar.info(
+        "This v1 checkpoint predates symmetric labels. It can use class 0 as a short-side downside proxy, "
+        "but it was not trained on short-win labels. The symmetric retrain did not pass out-of-sample "
+        "validation, so the existing v1 weights remain active."
+    )
 
 # Execution Engine Mode
 st.sidebar.subheader("🕹️ Execution Mode")
@@ -488,7 +494,15 @@ with tab_global:
         global_risk = st.selectbox("Global Risk per Trade", [0.02, 0.03, 0.05], index=1)
         run_global_btn = st.button("🌐 Execute Universe Scan Backtest", type="primary", width="stretch")
 
-    if run_global_btn or "global_backtest_res" not in st.session_state:
+    model_checkpoint = trainer.models_dir / f"{trainer.resolve_model_name(version=model_version_sel)}.txt"
+    try:
+        checkpoint_stat = model_checkpoint.stat()
+        checkpoint_revision = f"{checkpoint_stat.st_mtime_ns}_{checkpoint_stat.st_size}"
+    except OSError:
+        checkpoint_revision = "missing"
+    global_result_key = f"global_backtest_res_{model_version_sel}_{checkpoint_revision}"
+
+    if run_global_btn or global_result_key not in st.session_state:
         with st.spinner("Executing simultaneous universe scan across all available symbols..."):
             g_res = scanner.run_global_backtest(
                 timeframe=timeframe,
@@ -498,10 +512,11 @@ with tab_global:
                 tp_atr_mult=tp_atr_mult,
                 max_holding_bars=max_horizon_bars
             )
-            st.session_state["global_backtest_res"] = g_res
+            st.session_state[global_result_key] = g_res
 
-    g_res = st.session_state.get("global_backtest_res", {})
+    g_res = st.session_state.get(global_result_key, {})
     if g_res and "metrics" in g_res:
+        st.caption(f"Global backtest results for the selected {model_version_sel.upper()} checkpoint.")
         g_metrics = g_res["metrics"]
         g_equity = g_res["equity_curve"]
 

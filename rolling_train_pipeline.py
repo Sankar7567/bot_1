@@ -166,8 +166,8 @@ class RollingBatchPipeline:
         batches = [symbols[i * batch_size : (i + 1) * batch_size] for i in range(num_batches)]
 
         clean_ver = model_version.lower().strip()
-        symmetric_directional = clean_ver in ("v2", "2")
-        model_name = "lightgbm_crypto_model_v2" if symmetric_directional else "lightgbm_crypto_model_v1"
+        symmetric_directional = clean_ver not in ("v1_legacy", "legacy_v1")
+        model_name = "lightgbm_crypto_model_v2" if clean_ver in ("v2", "2") else "lightgbm_crypto_model_v1"
 
         log_audit(
             f"Initiating accelerated rolling-batch training for {num_symbols} symbols in {num_batches} batches "
@@ -193,7 +193,30 @@ class RollingBatchPipeline:
                 with open(meta_path, "r") as f:
                     meta = json.load(f)
                     feature_cols = meta.get("feature_cols", [])
-                log_audit(f"Loaded existing model booster ({model_name}) with {booster.current_iteration()} iterations.")
+                checkpoint_is_symmetric = bool(
+                    meta.get("symmetric_directional", model_name.endswith("_v2"))
+                )
+                requested_class_weight = (
+                    "balanced"
+                    if symmetric_directional and clean_ver in ("v1", "1")
+                    else None
+                )
+                checkpoint_class_weight = meta.get("class_weight")
+                if (
+                    checkpoint_is_symmetric != symmetric_directional
+                    or checkpoint_class_weight != requested_class_weight
+                ):
+                    log_audit(
+                        f"Discarding incompatible {model_name} checkpoint: "
+                        f"symmetric_directional={checkpoint_is_symmetric}, "
+                        f"requested_symmetric={symmetric_directional}, "
+                        f"class_weight={checkpoint_class_weight}, "
+                        f"requested_class_weight={requested_class_weight}. Starting a fresh model."
+                    )
+                    booster = None
+                    feature_cols = []
+                if booster is not None:
+                    log_audit(f"Loaded existing model booster ({model_name}) with {booster.current_iteration()} iterations.")
             except Exception as e:
                 logger.warning(f"Could not load existing booster, starting fresh: {e}")
                 booster = None
@@ -321,7 +344,20 @@ class RollingBatchPipeline:
             y_batch = batch_dataset["label"].map(label_map).to_numpy()
             X_batch = batch_dataset[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
-            train_data = lgb.Dataset(X_batch, label=y_batch, free_raw_data=True)
+            sample_weights = None
+            class_weight = None
+            if symmetric_directional and clean_ver in ("v1", "1"):
+                class_counts = np.bincount(y_batch, minlength=3)
+                class_weights = len(y_batch) / (3.0 * np.maximum(class_counts, 1))
+                sample_weights = class_weights[y_batch]
+                class_weight = "balanced"
+
+            train_data = lgb.Dataset(
+                X_batch,
+                label=y_batch,
+                weight=sample_weights,
+                free_raw_data=True
+            )
 
             # 4. Incremental LightGBM booster training
             if booster is None:
@@ -347,6 +383,7 @@ class RollingBatchPipeline:
                     "label_map": {-1: 0, 0: 1, 1: 2},
                     "inv_label_map": {0: -1, 1: 0, 2: 1},
                     "symmetric_directional": symmetric_directional,
+                    "class_weight": class_weight,
                     "total_iterations": booster.current_iteration(),
                     "batches_completed": b_idx + 1
                 }, f, indent=2)

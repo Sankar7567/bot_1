@@ -52,7 +52,7 @@ def rolling_train(
     max_storage_gb: float = typer.Option(18.0, "--max-storage-gb", help="Strict disk ceiling threshold in GB"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated symbols list"),
     synthetic: bool = typer.Option(False, "--synthetic", help="Use realistic synthetic data for fast local verification"),
-    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to train: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to train: 'v1' (original 69-feature architecture, symmetric long/short) or 'v2' (111-feature architecture, symmetric long/short)")
 ):
     """
     Ingests, engineers features for, and trains LightGBM on batches of symbols,
@@ -89,7 +89,7 @@ def optimize_risk(
     risks: str = typer.Option("0.02,0.03,0.05", "--risks", "-r", help="Comma-separated risk fractions to test"),
     capital: float = typer.Option(100.0, "--capital", "-c", help="Starting compounding capital in USD"),
     threshold: float = typer.Option(0.35, "--threshold", help="ML probability threshold"),
-    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to evaluate: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to evaluate: 'v1' (original 69-feature architecture, symmetric long/short) or 'v2' (111-feature architecture, symmetric long/short)")
 ):
     """
     Backtests and compares 2%, 3%, and 5% account risk per trade compounding from $100 starting balance.
@@ -200,7 +200,7 @@ def live_scan(
     risk: float = typer.Option(0.03, "--risk", "-r", help="Risk fraction per trade (default 3%)"),
     symbols: Optional[str] = typer.Option(None, "--symbols", "-s", help="Comma-separated active symbols to poll"),
     daemon: bool = typer.Option(False, "--daemon", "-d", help="Run in continuous polling loop"),
-    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original 69-feature architecture, symmetric long/short) or 'v2' (111-feature architecture, symmetric long/short)")
 ):
     """
     Polls real-time Binance Futures candles via CCXT, runs LightGBM inference,
@@ -402,7 +402,7 @@ def backtest(
     taker_fee: float = typer.Option(0.0005, "--taker-fee", help="Taker fee (0.05% = 0.0005)"),
     maker_fee: float = typer.Option(0.0002, "--maker-fee", help="Maker fee (0.02% = 0.0002)"),
     funding_rate_8h: float = typer.Option(0.0001, "--funding-rate", help="8h Funding rate (0.01% = 0.0001)"),
-    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original 69-feature architecture, symmetric long/short) or 'v2' (111-feature architecture, symmetric long/short)")
 ):
     """
     Runs strict one-trade-at-a-time backtest with dynamic ATR risk sizing and compounding equity.
@@ -507,7 +507,7 @@ def execute(
     monitor_interval: int = typer.Option(30, "--monitor-interval", help="Active trade monitoring interval in seconds (default 30s)"),
     daemon: bool = typer.Option(False, "--daemon", "-d", help="Run continuously in bulletproof 24/7 background daemon loop"),
     iterations: Optional[int] = typer.Option(None, "--iterations", help="Maximum iterations to run if in daemon mode"),
-    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original checkpoint/features) or 'v2' (symmetric directional)")
+    model_version: str = typer.Option("v1", "--model-version", "--model", "-v", help="Model version to use: 'v1' (original 69-feature architecture, symmetric long/short) or 'v2' (111-feature architecture, symmetric long/short)")
 ):
     """
     Executes trades in PAPER or LIVE mode on Binance Futures.

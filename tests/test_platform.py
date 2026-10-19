@@ -149,10 +149,17 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
         agg_df = trainer.load_aggregated_dataset(timeframe="5m", sl_atr_mult=1.0, tp_atr_mult=3.0)
         self.assertFalse(agg_df.empty)
+        self.assertTrue(trainer.symmetric_directional)
+        self.assertGreater((agg_df["label"] == -1).sum(), 0, "v1 training data must contain short-winner labels")
+        self.assertGreater((agg_df["label"] == 1).sum(), 0, "v1 training data must contain long-winner labels")
 
         cv_results = trainer.train_walk_forward_cv(agg_df, n_splits=2, embargo_pct=0.01)
         self.assertIn("mean_accuracy", cv_results)
         self.assertIn("mean_precision_tp", cv_results)
+        for fold in cv_results["fold_details"]:
+            self.assertLess(fold["train_end_timestamp"], fold["test_start_timestamp"])
+            if fold["test_end_timestamp"] is not None:
+                self.assertLess(fold["test_start_timestamp"], fold["test_end_timestamp"])
         self.assertTrue((Path("test_models") / "lightgbm_crypto_model_v1.txt").exists())
         v1_schema = json.loads(Path("models/lightgbm_crypto_model_v1_metadata.json").read_text())["feature_cols"]
         self.assertEqual(trainer.feature_cols, v1_schema)
@@ -214,6 +221,19 @@ class TestCryptoMLPlatform(unittest.TestCase):
     def test_08_rolling_batch_training_and_disk_purging(self):
         """Verify rolling-batch pipeline absorbs weights and automatically purges raw batch files."""
         rolling = RollingBatchPipeline(base_dir="test_batch_data", models_dir="test_models", max_storage_gb=18.0)
+        # Mark the existing checkpoint as legacy to verify the changed label
+        # semantics force a clean retrain rather than incremental continuation.
+        legacy_model = Path("models/lightgbm_crypto_model_v1.txt")
+        if legacy_model.exists():
+            shutil.copyfile(legacy_model, Path("test_models/lightgbm_crypto_model_v1.txt"))
+            legacy_metadata = json.loads(
+                Path("models/lightgbm_crypto_model_v1_metadata.json").read_text()
+            )
+            legacy_metadata["symmetric_directional"] = False
+            legacy_metadata.pop("class_weight", None)
+            Path("test_models/lightgbm_crypto_model_v1_metadata.json").write_text(
+                json.dumps(legacy_metadata)
+            )
         res = rolling.run_rolling_training(
             symbols=["BTC/USDT:USDT", "ETH/USDT:USDT"],
             batch_size=1,
@@ -227,6 +247,11 @@ class TestCryptoMLPlatform(unittest.TestCase):
         trained_schema = json.loads(
             Path("test_models/lightgbm_crypto_model_v1_metadata.json").read_text()
         )["feature_cols"]
+        trained_metadata = json.loads(
+            Path("test_models/lightgbm_crypto_model_v1_metadata.json").read_text()
+        )
+        self.assertTrue(trained_metadata["symmetric_directional"])
+        self.assertEqual(trained_metadata["class_weight"], "balanced")
         expected_schema = json.loads(
             Path("models/lightgbm_crypto_model_v1_metadata.json").read_text()
         )["feature_cols"]
@@ -1329,7 +1354,11 @@ class TestCryptoMLPlatform(unittest.TestCase):
     def test_35_low_price_tick_rr_and_bidirectional_class_mapping(self):
         """Low-priced contracts retain exact 1:3 brackets, and v1 selects either side."""
         from unittest.mock import MagicMock
-        from trading_rules import calculate_bracket_prices, select_directional_signal
+        from trading_rules import (
+            calculate_bracket_prices,
+            directional_probability_scores,
+            select_directional_signal,
+        )
 
         entry = 0.08428
         atr = 0.00023
@@ -1346,15 +1375,38 @@ class TestCryptoMLPlatform(unittest.TestCase):
 
         self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], True), ("SHORT", 0.80))
         self.assertEqual(select_directional_signal([0.10, 0.10, 0.80], True), ("LONG", 0.80))
-        # The helper can ignore class 0 for the strictly legacy interpretation.
-        self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], False), ("LONG", 0.10))
+        self.assertEqual(select_directional_signal([0.30, 0.55, 0.15], True)[0], "NO_TRADE")
+        self.assertEqual(directional_probability_scores([0.30, 0.55, 0.15], True), (0.0, 0.0))
+        # Ignore legacy class 0; a tie with neutral is not a directional entry.
+        self.assertEqual(select_directional_signal([0.80, 0.10, 0.10], False), ("NO_TRADE", 0.10))
         trainer_default = ModelTrainer()
         self.assertEqual(trainer_default.model_version, "v1")
-        self.assertFalse(trainer_default.symmetric_directional)
+        self.assertTrue(trainer_default.symmetric_directional)
         self.assertTrue(trainer_default.supports_short_trades)
         self.assertEqual(trainer_default.predict_directional_signal([0.80, 0.10, 0.10]), ("SHORT", 0.80))
         self.assertEqual(trainer_default.predict_directional_signal([0.10, 0.10, 0.80]), ("LONG", 0.80))
         self.assertFalse(ModelTrainer(model_version="v1_legacy").symmetric_directional)
+
+        source_model = Path("models/lightgbm_crypto_model_v1.txt")
+        if source_model.exists():
+            legacy_dir = Path("test_legacy_semantics")
+            legacy_dir.mkdir(exist_ok=True)
+            shutil.copyfile(source_model, legacy_dir / source_model.name)
+            legacy_metadata = json.loads(
+                Path("models/lightgbm_crypto_model_v1_metadata.json").read_text()
+            )
+            legacy_metadata.pop("symmetric_directional", None)
+            (legacy_dir / "lightgbm_crypto_model_v1_metadata.json").write_text(
+                json.dumps(legacy_metadata)
+            )
+            legacy_trainer = ModelTrainer(models_dir=str(legacy_dir), model_version="v1")
+            self.assertTrue(legacy_trainer.load_model(version="v1"))
+            self.assertFalse(legacy_trainer.symmetric_directional)
+            self.assertTrue(legacy_trainer.supports_short_trades)
+            strictly_legacy = ModelTrainer(models_dir=str(legacy_dir), model_version="v1_legacy")
+            self.assertTrue(strictly_legacy.load_model(version="v1_legacy"))
+            self.assertFalse(strictly_legacy.supports_short_trades)
+            shutil.rmtree(legacy_dir, ignore_errors=True)
 
         engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
         engine.mode = "PAPER"
@@ -1452,6 +1504,152 @@ class TestCryptoMLPlatform(unittest.TestCase):
                         global_trade["sl_price"] - global_trade["entry_price"]
                     )
                 self.assertAlmostEqual(global_rr, 3.0, places=8)
+
+    def test_38_entry_nuclear_reset_precedes_every_new_position(self):
+        """New paper positions require a verified account-wide order reset first."""
+        from unittest.mock import MagicMock, patch
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "PAPER"
+        engine.paper_wallet = MagicMock()
+        engine.paper_wallet.active_position = None
+        engine.risk_pct = 0.05
+        engine.live_adapter = None
+        engine.get_symbol_limits = MagicMock(return_value={"tick_size": 0.01})
+        engine.get_symbol_max_leverage = MagicMock(return_value=10)
+        engine.get_active_trade = MagicMock(return_value=None)
+        engine.save_active_trade = MagicMock()
+
+        operations = []
+        engine.nuclear_reset_all_orders = MagicMock(side_effect=lambda **_kwargs: (
+            operations.append("reset") or {"verified_empty": True, "total_cancelled": 2}
+        ))
+        engine.paper_wallet.open_position.side_effect = lambda **_kwargs: operations.append("entry")
+        candidate = {
+            "symbol": "BTC/USDT:USDT",
+            "bar": pd.Series({"close": 100.0, "atr_14": 1.0}),
+            "direction": "SHORT",
+            "confidence": 0.8,
+        }
+
+        signal_path = Path("test_entry_signal.json")
+        with patch("execution.append_audit_log"), patch("execution.LATEST_SIGNAL_PATH", signal_path):
+            engine.execute_trade(
+                candidate,
+                pos_size=1.0,
+                sl_price=101.0,
+                tp_price=97.0,
+                dollar_risk=1.0,
+                max_lev=10,
+            )
+
+        self.assertEqual(operations, ["reset", "entry"])
+        engine.nuclear_reset_all_orders.assert_called_once_with(max_passes=5)
+        engine.paper_wallet.open_position.assert_called_once()
+        engine.save_active_trade.assert_called_once()
+        signal_path.unlink(missing_ok=True)
+
+    def test_39_unverified_entry_reset_blocks_position(self):
+        """An unverified nuclear reset fails closed and cannot open a position."""
+        from unittest.mock import MagicMock, patch
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "PAPER"
+        engine.paper_wallet = MagicMock()
+        engine.paper_wallet.active_position = None
+        engine.risk_pct = 0.05
+        engine.live_adapter = None
+        engine.get_symbol_limits = MagicMock(return_value={"tick_size": 0.01})
+        engine.get_symbol_max_leverage = MagicMock(return_value=10)
+        engine.get_active_trade = MagicMock(return_value=None)
+        engine.nuclear_reset_all_orders = MagicMock(return_value={"verified_empty": False})
+        engine.save_active_trade = MagicMock()
+        candidate = {
+            "symbol": "ETH/USDT:USDT",
+            "bar": pd.Series({"close": 100.0, "atr_14": 1.0}),
+            "direction": "LONG",
+            "confidence": 0.8,
+        }
+
+        with patch("execution.append_audit_log"):
+            with self.assertRaisesRegex(RuntimeError, "did not verify zero open orders"):
+                engine.execute_trade(
+                    candidate,
+                    pos_size=1.0,
+                    sl_price=99.0,
+                    tp_price=103.0,
+                    dollar_risk=1.0,
+                    max_lev=10,
+                )
+
+        engine.paper_wallet.open_position.assert_not_called()
+        engine.save_active_trade.assert_not_called()
+
+    def test_40_existing_position_is_never_nuclear_reset(self):
+        """Entry cleanup must not cancel orders while a position is protected."""
+        from unittest.mock import MagicMock, patch
+
+        engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
+        engine.mode = "PAPER"
+        engine.paper_wallet = MagicMock()
+        engine.risk_pct = 0.05
+        engine.live_adapter = None
+        engine.get_symbol_limits = MagicMock(return_value={"tick_size": 0.01})
+        engine.get_symbol_max_leverage = MagicMock(return_value=10)
+        engine.get_active_trade = MagicMock(return_value={"symbol": "SOL/USDT:USDT", "status": "OPEN"})
+        engine.nuclear_reset_all_orders = MagicMock()
+        candidate = {
+            "symbol": "BTC/USDT:USDT",
+            "bar": pd.Series({"close": 100.0, "atr_14": 1.0}),
+            "direction": "LONG",
+            "confidence": 0.8,
+        }
+
+        with patch("execution.append_audit_log"):
+            with self.assertRaisesRegex(RuntimeError, "active position already exists"):
+                engine.execute_trade(
+                    candidate,
+                    pos_size=1.0,
+                    sl_price=99.0,
+                    tp_price=103.0,
+                    dollar_risk=1.0,
+                    max_lev=10,
+                )
+
+        engine.nuclear_reset_all_orders.assert_not_called()
+        engine.paper_wallet.open_position.assert_not_called()
+
+    def test_41_training_sample_spans_full_symbol_history(self):
+        """Per-symbol caps preserve old and recent regimes instead of tail-only rows."""
+        sample_dir = Path("test_history_sampling")
+        feature_dir = sample_dir / "features" / "5m"
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        timestamps = pd.date_range("2021-01-01", periods=200, freq="5min", tz="UTC")
+        close = 100.0 + np.arange(200, dtype=float) * 0.01
+        frame = pd.DataFrame({
+            "timestamp": timestamps,
+            "open": close,
+            "high": close + 0.2,
+            "low": close - 0.2,
+            "close": close,
+            "volume": 1.0,
+            "atr_14": 0.1,
+        })
+        frame.to_parquet(feature_dir / "SAMPLE_USDT_USDT.parquet", index=False)
+
+        trainer = ModelTrainer(models_dir="test_models", pipeline=DataPipeline(base_dir=str(sample_dir)))
+        sampled = trainer.load_aggregated_dataset(
+            symbols=["SAMPLE/USDT:USDT"],
+            timeframe="5m",
+            max_holding_bars=2,
+            max_samples_per_symbol=20,
+            symmetric_directional=True,
+        )
+
+        self.assertEqual(len(sampled), 20)
+        self.assertEqual(sampled.timestamp.iloc[0], timestamps[0])
+        self.assertEqual(sampled.timestamp.iloc[-1], timestamps[-1])
+        shutil.rmtree(sample_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

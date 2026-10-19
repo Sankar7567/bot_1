@@ -26,7 +26,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 from data_pipeline import DataPipeline, sanitize_symbol_for_filename
 from features import FeatureEngineer
-from trading_rules import select_directional_signal, validate_rr_multipliers
+from trading_rules import (
+    select_directional_signal,
+    validate_rr_multipliers,
+)
 
 logger = logging.getLogger("ModelEngine")
 
@@ -182,12 +185,13 @@ class ModelTrainer:
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.pipeline = pipeline or DataPipeline()
         self.model_version = model_version
-        self.symmetric_directional = model_version.lower() in ("v2", "2")
-        # v1's class 0 is a bearish/downside proxy for SHORT selection, while
-        # class 2 is its long-target score. v2 has a directly trained short win.
-        self.supports_short_trades = model_version.lower() in (
-            "v1", "1", "v1_legacy", "legacy_v1", "v2", "2"
-        )
+        normalized_version = model_version.lower().strip()
+        # Both current versions use symmetric triple-barrier labels:
+        # class 0 is a short winner and class 2 is a long winner. Only an
+        # explicitly selected legacy checkpoint retains the old one-sided labels.
+        self.symmetric_directional = normalized_version not in ("v1_legacy", "legacy_v1")
+        self.supports_short_trades = self.symmetric_directional
+        self.class_weight: Optional[str] = None
         self.feature_cols: List[str] = []
         self.model: Optional[lgb.LGBMClassifier] = None
         self.booster: Optional[lgb.Booster] = None
@@ -300,7 +304,9 @@ class ModelTrainer:
         and aggregates into a unified global cross-asset dataset.
         """
         if symmetric_directional is None:
-            symmetric_directional = self.model_version.lower() in ("v2", "2")
+            symmetric_directional = self.model_version.lower().strip() not in (
+                "v1_legacy", "legacy_v1"
+            )
         self.symmetric_directional = bool(symmetric_directional)
         fe = FeatureEngineer(self.pipeline)
         feat_dir = self.pipeline.features_dir / timeframe
@@ -336,7 +342,16 @@ class ModelTrainer:
                 )
 
                 if max_samples_per_symbol and len(labeled_df) > max_samples_per_symbol:
-                    labeled_df = labeled_df.iloc[-max_samples_per_symbol:]
+                    # Keep a representative sample across the full history;
+                    # tail-only truncation would silently throw away years of
+                    # regime data when training on a long cache.
+                    sample_positions = np.linspace(
+                        0,
+                        len(labeled_df) - 1,
+                        num=max_samples_per_symbol,
+                        dtype=np.int64,
+                    )
+                    labeled_df = labeled_df.iloc[sample_positions]
 
                 dfs.append(labeled_df)
             except Exception as e:
@@ -362,8 +377,9 @@ class ModelTrainer:
     ) -> Dict[str, Any]:
         """
         Executes Purged Walk-Forward Cross-Validation across time-series folds:
-        - Strict temporal ordering: fold k trains on [0, t_train], tests on [t_train + embargo, t_test].
-        - Embargo buffer eliminates overlapping triple-barrier holding periods between train and test.
+        - Splits on unique timestamps so symbols at the same time never land in different folds.
+        - Uses an inner chronological validation slice for early stopping, leaving the test fold untouched.
+        - Embargoes timestamps between training and test to reduce overlapping barrier outcomes.
         """
         if df.empty:
             raise ValueError("Aggregated dataset is empty.")
@@ -377,7 +393,8 @@ class ModelTrainer:
         
         y = df["label"].map(label_map).to_numpy()
         X = df[self.feature_cols].copy()
-        timestamps = df["timestamp"].to_numpy()
+        timestamps = pd.to_datetime(df["timestamp"], utc=True).to_numpy()
+        unique_timestamps = np.sort(pd.unique(timestamps))
 
         # Handle NaNs or Infs gracefully
         X = X.replace([np.inf, -np.inf], np.nan).fillna(0.0)
@@ -397,49 +414,95 @@ class ModelTrainer:
             "n_jobs": -1,
             "verbose": -1
         }
+        training_version = (version or self.model_version).lower().strip()
+        if self.symmetric_directional and training_version in ("v1", "1"):
+            # The neutral class is common in 1:3 barrier labels. Balance classes
+            # so v1 learns usable short and long scores instead of defaulting to
+            # neutral on nearly every row.
+            default_params["class_weight"] = "balanced"
         if params:
             default_params.update(params)
+        self.class_weight = default_params.get("class_weight")
 
         n_samples = len(df)
-        fold_size = n_samples // (n_splits + 1)
-        embargo_samples = int(fold_size * embargo_pct)
+        fold_time_size = len(unique_timestamps) // (n_splits + 1)
+        if fold_time_size < 1:
+            raise ValueError("Not enough unique timestamps for the requested walk-forward folds.")
+        embargo_times = int(fold_time_size * embargo_pct)
 
         fold_metrics = []
-        best_model = None
-        best_score = -1.0
+        best_iterations = []
 
         for fold in range(n_splits):
-            train_end = fold_size * (fold + 1)
-            test_start = train_end + embargo_samples
-            test_end = min(test_start + fold_size, n_samples)
+            train_end_idx = fold_time_size * (fold + 1)
+            test_start_idx = train_end_idx + embargo_times
+            test_end_idx = min(test_start_idx + fold_time_size, len(unique_timestamps))
 
-            if test_start >= n_samples:
+            if test_start_idx >= len(unique_timestamps):
                 break
 
-            X_train, y_train = X.iloc[:train_end], y[:train_end]
-            X_test, y_test = X.iloc[test_start:test_end], y[test_start:test_end]
+            train_end_time = unique_timestamps[train_end_idx]
+            test_start_time = unique_timestamps[test_start_idx]
+            test_end_time = (
+                unique_timestamps[test_end_idx]
+                if test_end_idx < len(unique_timestamps)
+                else None
+            )
+            train_mask = timestamps < train_end_time
+            test_mask = timestamps >= test_start_time
+            if test_end_time is not None:
+                test_mask &= timestamps < test_end_time
 
-            if len(X_test) == 0 or len(np.unique(y_train)) < 3:
+            train_indices = np.flatnonzero(train_mask)
+            test_indices = np.flatnonzero(test_mask)
+            if not len(test_indices) or len(np.unique(y[train_indices])) < 3:
                 continue
 
-            clf = lgb.LGBMClassifier(**default_params)
-            fit_kwargs = {}
+            X_test, y_test = X.iloc[test_indices], y[test_indices]
+            fold_best_iteration = int(default_params["n_estimators"])
+
             if early_stopping_rounds is not None:
-                fit_kwargs = {
-                    "eval_set": [(X_test, y_test)],
-                    "callbacks": [lgb.early_stopping(
-                        stopping_rounds=early_stopping_rounds, verbose=False
-                    )],
-                }
-            clf.fit(X_train, y_train, **fit_kwargs)
+                validation_time_count = max(1, int(train_end_idx * 0.1))
+                validation_start_idx = max(1, train_end_idx - validation_time_count)
+                validation_start_time = unique_timestamps[validation_start_idx]
+                core_train_indices = np.flatnonzero(timestamps < validation_start_time)
+                validation_mask = (timestamps >= validation_start_time) & (timestamps < train_end_time)
+                validation_indices = np.flatnonzero(validation_mask)
+                if (
+                    len(validation_indices)
+                    and len(np.unique(y[core_train_indices])) == 3
+                    and len(np.unique(y[validation_indices])) == 3
+                ):
+                    stopping_model = lgb.LGBMClassifier(**default_params)
+                    stopping_model.fit(
+                        X.iloc[core_train_indices],
+                        y[core_train_indices],
+                        eval_set=[(X.iloc[validation_indices], y[validation_indices])],
+                        callbacks=[lgb.early_stopping(
+                            stopping_rounds=early_stopping_rounds, verbose=False
+                        )],
+                    )
+                    fold_best_iteration = int(
+                        getattr(stopping_model, "best_iteration_", 0)
+                        or default_params["n_estimators"]
+                    )
+
+            fold_params = dict(default_params)
+            fold_params["n_estimators"] = max(1, fold_best_iteration)
+            clf = lgb.LGBMClassifier(**fold_params)
+            clf.fit(X.iloc[train_indices], y[train_indices])
 
             preds = clf.predict(X_test)
             probs = clf.predict_proba(X_test)
 
             # Score the same decision rule used live: choose whichever
             # directional probability is higher, then apply the confidence gate.
-            short_is_best = probs[:, 0] > probs[:, 2]
-            long_is_best = ~short_is_best
+            short_is_best = (
+                self.symmetric_directional
+                & (probs[:, 0] > probs[:, 2])
+                & (probs[:, 0] > probs[:, 1])
+            )
+            long_is_best = (probs[:, 2] >= probs[:, 0]) & (probs[:, 2] > probs[:, 1])
             short_signals = short_is_best & (probs[:, 0] >= signal_confidence_threshold)
             long_signals = long_is_best & (probs[:, 2] >= signal_confidence_threshold)
             prec_short = (
@@ -454,9 +517,12 @@ class ModelTrainer:
 
             metric = {
                 "fold": fold + 1,
-                "train_samples": len(X_train),
+                "train_samples": len(train_indices),
                 "test_samples": len(X_test),
-                "best_iteration": int(getattr(clf, "best_iteration_", 0) or default_params["n_estimators"]),
+                "best_iteration": fold_best_iteration,
+                "train_end_timestamp": pd.Timestamp(train_end_time).isoformat(),
+                "test_start_timestamp": pd.Timestamp(test_start_time).isoformat(),
+                "test_end_timestamp": pd.Timestamp(test_end_time).isoformat() if test_end_time is not None else None,
                 "accuracy": float(acc),
                 "precision_short": float(prec_short),
                 "precision_long": float(prec_long),
@@ -466,30 +532,44 @@ class ModelTrainer:
                 "long_signal_coverage": float(long_signals.mean()),
                 "f1_macro": float(f1)
             }
+            threshold_sweep = []
+            for threshold in (0.25, 0.30, 0.35, 0.40, 0.45, 0.50):
+                sweep_short = short_is_best & (probs[:, 0] >= threshold)
+                sweep_long = long_is_best & (probs[:, 2] >= threshold)
+                selected = sweep_short | sweep_long
+                directional_correct = np.where(sweep_short, y_test == 0, y_test == 2)
+                threshold_sweep.append({
+                    "threshold": threshold,
+                    "trade_coverage": float(selected.mean()),
+                    "short_coverage": float(sweep_short.mean()),
+                    "long_coverage": float(sweep_long.mean()),
+                    "precision_short": float(np.mean(y_test[sweep_short] == 0)) if sweep_short.any() else 0.0,
+                    "precision_long": float(np.mean(y_test[sweep_long] == 2)) if sweep_long.any() else 0.0,
+                    "precision_directional": float(np.mean(directional_correct[selected])) if selected.any() else 0.0,
+                    "short_signals": int(sweep_short.sum()),
+                    "long_signals": int(sweep_long.sum()),
+                })
+            metric["threshold_sweep"] = threshold_sweep
             fold_metrics.append(metric)
             logger.info(
                 f"Fold {fold+1}/{n_splits} - Acc: {acc:.4f}, Short Precision: {prec_short:.4f}, "
                 f"Long Precision: {prec_long:.4f}, Directional Precision: {prec_directional:.4f}, "
                 f"Coverage S/L: {short_signals.mean():.3f}/{long_signals.mean():.3f}, F1: {f1:.4f}"
             )
+            best_iterations.append(fold_best_iteration)
 
-            if prec_directional > best_score:
-                best_score = prec_directional
-                best_model = clf
-
-        # Use the strongest fold's stopping point, then fit the production
-        # checkpoint on all available rows rather than shipping a partial fold.
+        # Use a robust fold median for production iteration count rather than
+        # selecting the iteration that happened to win on a test fold.
         final_params = dict(default_params)
-        if best_model is not None:
-            best_iteration = int(getattr(best_model, "best_iteration_", 0) or default_params["n_estimators"])
-            final_params["n_estimators"] = max(1, best_iteration)
+        if best_iterations:
+            final_params["n_estimators"] = max(1, int(np.median(best_iterations)))
         final_model = lgb.LGBMClassifier(**final_params)
         final_model.fit(X, y)
 
         self.model = final_model
-        # Training labels produced by the current feature pipeline use the
-        # symmetric short/neutral/long semantics unless the caller explicitly
-        # loaded a legacy dataset before training.
+        # This new checkpoint uses the same class semantics as the labels
+        # supplied to training.
+        self.supports_short_trades = self.symmetric_directional
         if hasattr(final_model, "booster_"):
             self.booster = final_model.booster_
         
@@ -570,6 +650,7 @@ class ModelTrainer:
                 "label_map": {-1: 0, 0: 1, 1: 2},
                 "inv_label_map": {0: -1, 1: 0, 2: 1},
                 "symmetric_directional": self.symmetric_directional,
+                "class_weight": self.class_weight,
                 "model_version": version or self.model_version
             }, f, indent=2)
         logger.info(f"Saved model and metadata to {model_path}")
@@ -586,6 +667,7 @@ class ModelTrainer:
                         "label_map": {-1: 0, 1: 2, 0: 1},
                         "inv_label_map": {0: -1, 1: 0, 2: 1},
                         "symmetric_directional": self.symmetric_directional,
+                        "class_weight": self.class_weight,
                         "model_version": "v1"
                     }, f, indent=2)
 
@@ -610,19 +692,21 @@ class ModelTrainer:
         with open(meta_path, "r") as f:
             meta = json.load(f)
             self.feature_cols = meta.get("feature_cols", [])
+            # Old v1 checkpoints used the original class-0 downside score as
+            # a short-side proxy. Preserve that working behavior until the
+            # symmetric retrain is promoted; new checkpoints use true short-win
+            # class-0 labels and record symmetric_directional=True.
             self.symmetric_directional = bool(
-                meta.get(
-                    "symmetric_directional",
-                    resolved == "lightgbm_crypto_model_v2",
-                )
+                meta.get("symmetric_directional", resolved == "lightgbm_crypto_model_v2")
             )
-            # The preserved v1 checkpoint's class 0 is used as the existing
-            # downside/short-side proxy, and class 2 is the long score.
-            self.supports_short_trades = resolved in (
-                "lightgbm_crypto_model_v1",
-                "lightgbm_crypto_model",
-                "lightgbm_crypto_model_v2",
+            explicitly_legacy = (version or self.model_version).lower().strip() in (
+                "v1_legacy", "legacy_v1"
             )
+            self.supports_short_trades = not explicitly_legacy and (
+                self.symmetric_directional
+                or resolved in ("lightgbm_crypto_model_v1", "lightgbm_crypto_model")
+            )
+            self.class_weight = meta.get("class_weight")
 
         booster = lgb.Booster(model_file=str(model_path))
         self.booster = booster
@@ -642,10 +726,9 @@ class ModelTrainer:
 
     def predict_probabilities(self, df: pd.DataFrame) -> np.ndarray:
         """
-        Generates class probabilities for input rows. v2 outputs are
-        [P(short winner), P(neutral), P(long winner)]; legacy v1 uses
-        [P(long stop), P(neutral), P(long target)]. The v1 execution policy
-        compares class 0 as a downside/short-side proxy against class 2.
+        Generates class probabilities for input rows. Symmetric checkpoints
+        output [P(short winner), P(neutral), P(long winner)]. Legacy checkpoints
+        preserve their original label semantics as described by their metadata.
         """
         if self.model is None and self.booster is None:
             if not self.load_model():
@@ -664,7 +747,7 @@ class ModelTrainer:
             return self.model.predict_proba(X)
 
     def predict_directional_signal(self, probabilities: np.ndarray) -> Tuple[str, float]:
-        """Map model outputs to a side using the checkpoint's label semantics."""
+        """Choose a directional side only when it scores above neutral."""
         return select_directional_signal(probabilities, allow_short_score=self.supports_short_trades)
 
     def filter_high_liquidity_subsets(

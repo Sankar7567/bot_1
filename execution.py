@@ -1166,7 +1166,12 @@ class DualModeExecutionEngine:
             return self.live_adapter.nuclear_reset_all_orders(max_passes=max_passes)
         elif self.paper_wallet:
             return self.paper_wallet.nuclear_reset_all_orders(max_passes=max_passes)
-        return {"total_cancelled": 0, "passes_run": 1, "verified_empty": True}
+        return {
+            "total_cancelled": 0,
+            "passes_run": 0,
+            "verified_empty": False,
+            "error": "No execution backend is configured"
+        }
 
     def startup_sweep(self) -> None:
         """
@@ -1753,6 +1758,8 @@ class DualModeExecutionEngine:
             if self.trainer.booster is not None or self.trainer.model is not None:
                 probs = self.trainer.predict_probabilities(merged)
                 direction, confidence = self.trainer.predict_directional_signal(probs[-1])
+                if direction not in ("LONG", "SHORT"):
+                    return None
             else:
                 rsi = merged.iloc[-1].get("rsi_14", 50)
                 prob_tp = 0.40 if rsi > 50 else 0.20
@@ -1793,6 +1800,14 @@ class DualModeExecutionEngine:
         bar = candidate["bar"]
         direction = candidate["direction"]
         confidence = candidate["confidence"]
+
+        # Reject a duplicate entry before even changing leverage/margin settings.
+        initial_active_trade = self.get_active_trade()
+        if initial_active_trade is not None:
+            raise RuntimeError(
+                f"Cannot start {direction} on {sym}: an active position already exists "
+                f"on {initial_active_trade.get('symbol', 'unknown symbol')}."
+            )
 
         entry_price = float(bar["close"])
         atr_val = float(bar.get("atr_14", entry_price * 0.01))
@@ -1840,6 +1855,34 @@ class DualModeExecutionEngine:
             "status": "SIGNAL_GENERATED"
         }
 
+        # Re-check exchange/wallet ground truth immediately before starting a
+        # fresh position. Never cancel bracket orders protecting an open trade.
+        active_trade = self.get_active_trade()
+        if active_trade is not None:
+            raise RuntimeError(
+                f"Cannot start {direction} on {sym}: an active position already exists "
+                f"on {active_trade.get('symbol', 'unknown symbol')}."
+            )
+
+        # A fresh entry must start with no regular or conditional orders left
+        # on the account. Fail closed if the cleanup cannot be verified.
+        reset_result = self.nuclear_reset_all_orders(max_passes=5)
+        if not isinstance(reset_result, dict) or not reset_result.get("verified_empty", False):
+            append_audit_log(
+                "ENTRY_BLOCKED_ORDER_RESET",
+                f"Blocked new {direction} entry on {sym}: nuclear reset did not verify an empty order book.",
+                {"symbol": sym, "direction": direction, "nuclear_reset": reset_result}
+            )
+            raise RuntimeError(
+                f"Cannot start {direction} on {sym}: nuclear reset did not verify zero open orders."
+            )
+
+        append_audit_log(
+            "PRE_ENTRY_NUCLEAR_RESET",
+            f"Verified an empty order book immediately before opening {direction} on {sym}.",
+            {"symbol": sym, "direction": direction, "nuclear_reset": reset_result}
+        )
+
         # 3. Mode Execution
         if self.mode == "PAPER" and self.paper_wallet:
             self.paper_wallet.open_position(
@@ -1878,6 +1921,8 @@ class DualModeExecutionEngine:
                     signal_payload["entry_price"] = entry_price
             signal_payload["live_order_details"] = str(order_res.get("entry_order", {}))
             logger.info(f"[LIVE_ORDER] Executed {direction} on {sym} on Binance Futures.")
+        else:
+            raise RuntimeError("Cannot open a position: no execution backend is configured.")
 
         # Persist the final, filled entry and exchange-aligned bracket levels.
         tmp_signal_path = LATEST_SIGNAL_PATH.with_suffix(".tmp")
@@ -1995,6 +2040,7 @@ class DualModeExecutionEngine:
             notional = pos_size * entry_price
 
             item_status = "PENDING"
+            entry_blocked = False
 
             if conf < self.confidence_threshold:
                 item_status = "BELOW_THRESHOLD"
@@ -2026,15 +2072,25 @@ class DualModeExecutionEngine:
                     )
                 else:
                     # Valid highest-probability trade found! Execute!
-                    item_status = "SELECTED_AND_EXECUTED"
-                    executed_payload = self.execute_trade(
-                        candidate=cand,
-                        pos_size=pos_size,
-                        sl_price=sl_price,
-                        tp_price=tp_price,
-                        dollar_risk=dollar_risk,
-                        max_lev=max_lev
-                    )
+                    try:
+                        executed_payload = self.execute_trade(
+                            candidate=cand,
+                            pos_size=pos_size,
+                            sl_price=sl_price,
+                            tp_price=tp_price,
+                            dollar_risk=dollar_risk,
+                            max_lev=max_lev
+                        )
+                        item_status = "SELECTED_AND_EXECUTED"
+                    except Exception as exc:
+                        item_status = "ENTRY_BLOCKED"
+                        entry_blocked = True
+                        logger.error(f"[ENTRY_BLOCKED] {exc}")
+                        append_audit_log(
+                            "ENTRY_BLOCKED",
+                            str(exc),
+                            {"symbol": sym, "direction": dir_}
+                        )
 
             leaderboard.append({
                 "symbol": sym,
@@ -2049,6 +2105,8 @@ class DualModeExecutionEngine:
                 "min_qty": limits["min_qty"],
                 "status": item_status
             })
+            if entry_blocked:
+                break
 
         self.latest_scan_leaderboard = leaderboard
         return executed_payload

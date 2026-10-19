@@ -24,7 +24,7 @@ from data_pipeline import DataPipeline, desanitize_filename_to_symbol
 from features import FeatureEngineer
 from model import ModelTrainer
 from backtester import Trade
-from trading_rules import validate_rr_multipliers
+from trading_rules import directional_probability_scores, validate_rr_multipliers
 
 logger = logging.getLogger("GlobalUniverseScanner")
 
@@ -63,8 +63,14 @@ class GlobalUniverseScanner:
         scored = df.copy()
         try:
             probs = trainer.predict_probabilities(scored)
-            scored["prob_long"] = probs[:, 2]
-            scored["prob_short"] = probs[:, 0] if trainer.supports_short_trades else 0.0
+            scores = [
+                directional_probability_scores(
+                    probability, allow_short_score=trainer.supports_short_trades
+                )
+                for probability in probs
+            ]
+            scored["prob_long"] = [long_score for long_score, _ in scores]
+            scored["prob_short"] = [short_score for _, short_score in scores]
         except Exception:
             bullish = scored.get("trend_bullish", pd.Series(0, index=scored.index)) == 1
             bearish = scored.get("trend_bearish", pd.Series(0, index=scored.index)) == 1

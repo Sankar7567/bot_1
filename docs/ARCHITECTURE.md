@@ -175,13 +175,13 @@ Labels are encoded as:
 
 ### Multi-Model Versioning Architecture (`v1` vs `v2`)
 The platform supports side-by-side versioned model checkpoints:
-- **`v1` (Preferred Checkpoint):** Uses the original 69-feature schema and existing weights. Runtime compares class 0 as the SHORT-side downside score with class 2 as the LONG-side upside score.
+- **`v1` (Preferred Checkpoint):** Uses the original 69-feature schema. The currently retained checkpoint predates symmetric labels; runtime can use its class 0 downside score as a short-side proxy and class 2 as the long score. New v1 training uses symmetric triple-barrier labels (class 0 = short winner, class 2 = long winner), but a replacement must pass out-of-sample validation before promotion.
   - Weights: `models/lightgbm_crypto_model_v1.txt` (and backward-compatible `models/lightgbm_crypto_model.txt`)
   - Schema: `models/lightgbm_crypto_model_v1_metadata.json`
 - **`v2` (Trend-Following):** Trained on 111 features incorporating ADX, multi-period EMA slopes, and MACD continuation indicators, paired with symmetric directional triple-barrier labeling (class 0 = short win, class 2 = long win).
   - Weights: `models/lightgbm_crypto_model_v2.txt`
   - Schema: `models/lightgbm_crypto_model_v2_metadata.json`
-- **Switching:** Controlled via CLI `--model v1` / `--model v2` and Streamlit sidebar radio toggle. Trading defaults to v1 and compares its downside and upside scores so either side can be selected.
+- **Switching:** Controlled via CLI `--model v1` / `--model v2` and Streamlit sidebar radio toggle. Trading defaults to v1 and chooses an eligible short or long signal only when it scores above the neutral class.
 
 ### Purged Walk-Forward Cross-Validation
 - Multi-fold temporal splits preserving chronological order.

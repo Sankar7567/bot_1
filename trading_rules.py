@@ -5,27 +5,48 @@ from math import isfinite
 from typing import Optional, Sequence, Tuple
 
 
+def directional_probability_scores(
+    probabilities: Sequence[float],
+    allow_short_score: bool = True,
+) -> Tuple[float, float]:
+    """Return eligible (long, short) scores, ignoring neutral-dominated rows."""
+    if len(probabilities) < 3:
+        raise ValueError("Expected three class probabilities: short, neutral, long")
+
+    short_probability = float(probabilities[0]) if allow_short_score else 0.0
+    neutral_probability = float(probabilities[1])
+    long_probability = float(probabilities[2])
+    if not all(isfinite(value) for value in (short_probability, neutral_probability, long_probability)):
+        raise ValueError("Model probabilities must be finite")
+
+    if allow_short_score and short_probability > long_probability and short_probability > neutral_probability:
+        return 0.0, short_probability
+    if long_probability >= short_probability and long_probability > neutral_probability:
+        return long_probability, 0.0
+    return 0.0, 0.0
+
+
 def select_directional_signal(
     probabilities: Sequence[float],
     allow_short_score: bool = True,
 ) -> Tuple[str, float]:
     """Select the stronger side from a three-class model output.
 
-    When allowed, class 0 is used as a short-side/downside score and class 2
-    as the long-side/upside score. Set allow_short_score=False to treat class 0
-    strictly as a legacy long-stop class and only permit class 2 LONG signals.
+    For symmetric checkpoints, class 0 is a short winner and class 2 is a
+    long winner. Set allow_short_score=False for legacy checkpoints whose class
+    0 represents a long stop, so only class 2 LONG signals are permitted.
     """
     if len(probabilities) < 3:
         raise ValueError("Expected three class probabilities: short, neutral, long")
 
-    short_probability = float(probabilities[0]) if allow_short_score else 0.0
-    long_probability = float(probabilities[2])
-    if not isfinite(short_probability) or not isfinite(long_probability):
-        raise ValueError("Directional probabilities must be finite")
-
-    if short_probability > long_probability:
-        return "SHORT", short_probability
-    return "LONG", long_probability
+    long_score, short_score = directional_probability_scores(
+        probabilities, allow_short_score=allow_short_score
+    )
+    if short_score > 0.0:
+        return "SHORT", short_score
+    if long_score > 0.0:
+        return "LONG", long_score
+    return "NO_TRADE", max(float(probabilities[0]) if allow_short_score else 0.0, float(probabilities[2]))
 
 
 def validate_rr_multipliers(stop_multiplier: float, target_multiplier: float) -> None:

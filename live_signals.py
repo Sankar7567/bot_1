@@ -226,6 +226,8 @@ class LiveSignalGenerator:
             if self.trainer.booster is not None or self.trainer.model is not None:
                 probs = self.trainer.predict_probabilities(merged)
                 direction, confidence = self.trainer.predict_directional_signal(probs[-1])
+                if direction not in ("LONG", "SHORT"):
+                    return None
             else:
                 rsi = merged.iloc[-1].get("rsi_14", 50)
                 prob_tp = 0.40 if rsi > 50 else 0.20

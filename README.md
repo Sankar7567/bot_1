@@ -125,7 +125,7 @@ python cli.py execute --mode live --daemon --poll-interval 15 --monitor-interval
 The daemon runs **infinitely without crashing**, cycling seamlessly through:
 `Universal Scanning -> Global Best-Trade Selection -> Order Execution -> 30-Second Active Trade Monitoring -> Closure Sweep & Cleanup -> Infinite Re-Scanning`.
 
-Trading commands default to the existing **v1 checkpoint and feature architecture**. The signal selector compares its class 0 downside score for SHORT with class 2 upside score for LONG and takes the stronger side. v2 remains available as the separately trained symmetric directional model.
+Trading commands default to the original **v1 feature architecture**. The retained v1 checkpoint can select either side using its legacy downside score for shorts; new v1 training uses symmetric 1:3 short and long labels. A retrained checkpoint must pass chronological out-of-sample validation before replacing the retained weights. v2 remains available as a separate model version.
 
 Live brackets use a strict **1:3 risk-reward ratio** after price-tick alignment. The stop distance rounds outward to the next valid tick, the target is set to exactly three times that distance, and a symbol is skipped if a positive target cannot be represented.
 
