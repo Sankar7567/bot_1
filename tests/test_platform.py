@@ -1294,12 +1294,49 @@ class TestCryptoMLPlatform(unittest.TestCase):
         adapter.exchange.amount_to_precision.return_value = "0.050"
         # price_to_precision rounds to 2 decimals
         adapter.exchange.price_to_precision.side_effect = lambda sym, p: f"{p:.2f}"
-        # Simulate fill at 50123.45 (different from initial candidate entry)
-        adapter.exchange.create_order.return_value = {
-            "id": "entry_market_1",
-            "average": 50123.45,
-            "status": "closed"
-        }
+        order_events = []
+
+        def create_order(**kwargs):
+            order_type = kwargs["type"]
+            if order_type == "MARKET":
+                order_events.append("entry")
+                return {"id": "entry_market_1", "average": 50123.45, "status": "closed"}
+            if order_type == "STOP_MARKET":
+                order_events.append("stop")
+                return {"id": "stop_order_1", "stopPrice": "49623.45", "status": "open"}
+            if order_type == "TAKE_PROFIT_MARKET":
+                order_events.append("target")
+                return {"id": "target_order_1", "stopPrice": kwargs["params"]["stopPrice"], "status": "open"}
+            raise AssertionError(f"Unexpected order type: {order_type}")
+
+        def fetch_open_orders(sym=None, params=None):
+            if params and params.get("stop"):
+                order_events.append("query_stop")
+                return [{
+                    "id": "stop_order_1",
+                    # Some CCXT paths normalize the trigger to generic market
+                    # while Binance's raw origType still identifies STOP_MARKET.
+                    "type": "market",
+                    "side": "sell",
+                    "stopPrice": "49623.45",
+                    "amount": 0.05,
+                    "info": {"origType": "STOP_MARKET"},
+                }]
+            order_events.append("query_regular_orders")
+            return []
+
+        adapter.exchange.create_order.side_effect = create_order
+        adapter.exchange.fetch_positions.side_effect = lambda: (
+            order_events.append("query_position") or [{
+                "symbol": "BTC/USDT:USDT",
+                "contracts": 0.05,
+                "side": "long",
+                # Exchange-reported entry differs from the market order summary.
+                "entryPrice": 50130.0,
+                "notional": 2506.5,
+            }]
+        )
+        adapter.exchange.fetch_open_orders.side_effect = fetch_open_orders
 
         trade_res = adapter.execute_bracket_trade(
             symbol="BTC/USDT:USDT",
@@ -1310,9 +1347,9 @@ class TestCryptoMLPlatform(unittest.TestCase):
             atr=500.0
         )
 
-        expected_entry = 50123.45
-        expected_sl = float(f"{expected_entry - 500.0:.2f}")
-        expected_tp = float(f"{expected_entry + 1500.0:.2f}")
+        expected_entry = 50130.0
+        expected_sl = 49623.45
+        expected_tp = 51649.65
 
         self.assertEqual(trade_res["entry_price"], expected_entry)
         self.assertEqual(trade_res["stop_loss"], expected_sl)
@@ -1320,6 +1357,72 @@ class TestCryptoMLPlatform(unittest.TestCase):
         # Verify exact 1:3 ratio on re-anchored prices
         rr_ratio = (trade_res["take_profit"] - trade_res["entry_price"]) / (trade_res["entry_price"] - trade_res["stop_loss"])
         self.assertAlmostEqual(rr_ratio, 3.0, places=4)
+        self.assertLess(order_events.index("stop"), order_events.index("query_position"))
+        self.assertLess(order_events.index("query_stop"), order_events.index("target"))
+
+        # The same post-stop exchange query must produce a symmetric short TP.
+        short_adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        short_adapter.exchange = MagicMock()
+        short_adapter.exchange.market.return_value = {"precision": {"price": 0.01, "amount": 0.001}}
+        short_adapter.exchange.amount_to_precision.return_value = "0.050"
+        short_adapter.exchange.price_to_precision.side_effect = lambda _sym, p: f"{p:.2f}"
+        short_events = []
+
+        def create_short_order(**kwargs):
+            order_type = kwargs["type"]
+            if order_type == "MARKET":
+                short_events.append("entry")
+                return {"id": "short_entry", "average": 50123.45, "status": "closed"}
+            if order_type == "STOP_MARKET":
+                short_events.append("stop")
+                return {"id": "short_stop", "stopPrice": "50623.45", "status": "open"}
+            if order_type == "TAKE_PROFIT_MARKET":
+                short_events.append("target")
+                return {"id": "short_target", "stopPrice": kwargs["params"]["stopPrice"], "status": "open"}
+            raise AssertionError(f"Unexpected order type: {order_type}")
+
+        def fetch_short_orders(sym=None, params=None):
+            if params and params.get("stop"):
+                short_events.append("query_stop")
+                return [{
+                    "id": "short_stop",
+                    "type": "stop_market",
+                    "side": "buy",
+                    "stopPrice": "50623.45",
+                    "amount": 0.05,
+                }]
+            short_events.append("query_regular_orders")
+            return []
+
+        short_adapter.exchange.create_order.side_effect = create_short_order
+        short_adapter.exchange.fetch_positions.side_effect = lambda: (
+            short_events.append("query_position") or [{
+                "symbol": "BTC/USDT:USDT",
+                "contracts": 0.05,
+                "side": "short",
+                "entryPrice": 50130.0,
+                "notional": -2506.5,
+            }]
+        )
+        short_adapter.exchange.fetch_open_orders.side_effect = fetch_short_orders
+
+        short_result = short_adapter.execute_bracket_trade(
+            symbol="BTC/USDT:USDT",
+            direction="SHORT",
+            amount=0.05,
+            stop_loss=51000.0,
+            take_profit=48000.0,
+            atr=500.0,
+        )
+        self.assertEqual(short_result["entry_price"], 50130.0)
+        self.assertEqual(short_result["stop_loss"], 50623.45)
+        self.assertEqual(short_result["take_profit"], 48649.65)
+        short_rr = (short_result["entry_price"] - short_result["take_profit"]) / (
+            short_result["stop_loss"] - short_result["entry_price"]
+        )
+        self.assertAlmostEqual(short_rr, 3.0, places=4)
+        self.assertLess(short_events.index("stop"), short_events.index("query_position"))
+        self.assertLess(short_events.index("query_stop"), short_events.index("target"))
 
         # 3. DualModeExecutionEngine.calculate_5pct_risk_position precision check
         engine = DualModeExecutionEngine.__new__(DualModeExecutionEngine)
@@ -1350,6 +1453,63 @@ class TestCryptoMLPlatform(unittest.TestCase):
         self.assertEqual(sl, 2950.00)
         self.assertEqual(tp, 3150.00)
         self.assertAlmostEqual((tp - 3000.0) / (3000.0 - sl), 3.0, places=5)
+
+    def test_34b_live_bracket_closes_if_price_precision_breaks_exact_rr(self):
+        """Never submit a rounded target when the exchange tick breaks the 1:3 ratio."""
+        from unittest.mock import MagicMock
+        from execution import LiveExchangeAdapter
+
+        adapter = LiveExchangeAdapter.__new__(LiveExchangeAdapter)
+        adapter.exchange = MagicMock()
+        adapter.exchange.market.return_value = {"precision": {"price": 0.01, "amount": 0.001}}
+        adapter.exchange.amount_to_precision.return_value = "0.050"
+        # Simulate an exchange precision mode that only allows one decimal place.
+        adapter.exchange.price_to_precision.side_effect = lambda _sym, price: f"{price:.1f}"
+        events = []
+
+        def create_order(**kwargs):
+            if kwargs["type"] == "MARKET":
+                events.append("close" if kwargs.get("params", {}).get("reduceOnly") else "entry")
+                return {"id": "market_order", "average": 50123.45, "status": "closed"}
+            if kwargs["type"] == "STOP_MARKET":
+                events.append("stop")
+                return {"id": "stop_order", "stopPrice": "49623.45", "status": "open"}
+            if kwargs["type"] == "TAKE_PROFIT_MARKET":
+                events.append("target")
+                raise AssertionError("An inexact target must not be submitted")
+            raise AssertionError(f"Unexpected order type: {kwargs['type']}")
+
+        adapter.exchange.create_order.side_effect = create_order
+        adapter.exchange.fetch_positions.return_value = [{
+            "symbol": "BTC/USDT:USDT",
+            "contracts": 0.05,
+            "side": "long",
+            "entryPrice": 50130.0,
+            "notional": 2506.5,
+        }]
+        adapter.exchange.fetch_open_orders.side_effect = lambda _sym=None, params=None: (
+            [{
+                "id": "stop_order",
+                "type": "stop_market",
+                "side": "sell",
+                "stopPrice": "49623.45",
+            }]
+            if params and params.get("stop") else []
+        )
+        adapter.cancel_all_orders_for_symbol = MagicMock(return_value=1)
+
+        with self.assertRaisesRegex(RuntimeError, "entry was closed and its orders were cleared"):
+            adapter.execute_bracket_trade(
+                symbol="BTC/USDT:USDT",
+                direction="LONG",
+                amount=0.05,
+                stop_loss=49000.0,
+                take_profit=53000.0,
+                atr=500.0,
+            )
+
+        self.assertEqual(events, ["entry", "stop", "close"])
+        adapter.cancel_all_orders_for_symbol.assert_called_once_with("BTC/USDT:USDT")
 
     def test_35_low_price_tick_rr_and_bidirectional_class_mapping(self):
         """Low-priced contracts retain exact 1:3 brackets, and v1 selects either side."""

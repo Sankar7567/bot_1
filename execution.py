@@ -46,6 +46,7 @@ import time
 import math
 import logging
 import traceback
+from decimal import Decimal
 from typing import Dict, List, Optional, Any, Tuple, Callable
 from pathlib import Path
 from datetime import datetime, timezone
@@ -719,6 +720,145 @@ class LiveExchangeAdapter:
             # Default to not closed (safe assumption) to avoid spurious re-entry
             return False
 
+    @staticmethod
+    def _order_identifiers(order: Dict[str, Any]) -> set[str]:
+        """Return exchange and client identifiers from normalized or raw order data."""
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        identifiers = set()
+        for source in (order, info):
+            for key in ("id", "orderId", "algoId", "clientOrderId", "clientAlgoId"):
+                value = source.get(key)
+                if value not in (None, ""):
+                    identifiers.add(str(value))
+        return identifiers
+
+    @staticmethod
+    def _order_trigger_price(order: Dict[str, Any]) -> Optional[Decimal]:
+        """Read the confirmed trigger level from CCXT's normalized or raw order."""
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        for source in (order, info):
+            for key in ("stopPrice", "triggerPrice"):
+                value = source.get(key)
+                if value not in (None, "", 0, "0"):
+                    try:
+                        price = Decimal(str(value))
+                    except Exception:
+                        continue
+                    if price.is_finite() and price > 0:
+                        return price
+        return None
+
+    @staticmethod
+    def _position_direction(position: Dict[str, Any]) -> Optional[str]:
+        """Infer the position side from CCXT's unified and Binance raw fields."""
+        info = position.get("info") if isinstance(position.get("info"), dict) else {}
+        side = str(
+            position.get("side")
+            or position.get("positionSide")
+            or info.get("positionSide")
+            or ""
+        ).upper()
+        if side in ("LONG", "SHORT"):
+            return side
+        try:
+            contracts = float(position.get("contracts", 0.0) or position.get("size", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if contracts < 0:
+            return "SHORT"
+        if contracts > 0:
+            return "LONG"
+        return None
+
+    def _query_filled_entry_and_stop(
+        self,
+        symbol: str,
+        direction: str,
+        stop_order: Dict[str, Any],
+        requested_stop: float,
+        exit_side: str,
+        attempts: int = 3,
+    ) -> Tuple[float, float]:
+        """Confirm the exchange position entry and the actually resting stop trigger."""
+        requested_stop_dec = Decimal(str(requested_stop))
+        stop_ids = self._order_identifiers(stop_order)
+        last_problem = "position or stop order was not visible"
+
+        for attempt in range(attempts):
+            try:
+                positions = [p for p in self.get_open_positions() if p.get("symbol") == symbol]
+                matching_positions = [
+                    p for p in positions if self._position_direction(p) == direction
+                ]
+                # In one-way mode some CCXT versions omit side; a sole position
+                # on the symbol can still be tied to the direction we just opened.
+                if not matching_positions and len(positions) == 1:
+                    raw_side = self._position_direction(positions[0])
+                    if raw_side is None:
+                        matching_positions = positions
+
+                entry_price = None
+                if len(matching_positions) == 1:
+                    position = matching_positions[0]
+                    raw_entry = position.get("entryPrice") or position.get("entry_price")
+                    if raw_entry not in (None, "", 0, "0"):
+                        entry_candidate = Decimal(str(raw_entry))
+                        if entry_candidate.is_finite() and entry_candidate > 0:
+                            entry_price = entry_candidate
+                elif len(matching_positions) > 1:
+                    last_problem = f"multiple {direction} positions were returned for {symbol}"
+
+                resting_orders = self._fetch_open_orders_with_types(symbol)
+                stop_orders = []
+                for order in resting_orders:
+                    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+                    order_types = " ".join(
+                        str(source.get(key) or "")
+                        for source in (order, info)
+                        for key in ("type", "origType", "algoType")
+                    ).upper()
+                    order_side = str(order.get("side") or info.get("side") or "").lower()
+                    trigger = self._order_trigger_price(order)
+                    if (
+                        order_side == exit_side.lower()
+                        and "STOP" in order_types
+                        and "TAKE_PROFIT" not in order_types
+                        and trigger is not None
+                    ):
+                        stop_orders.append((order, trigger))
+
+                identified = [
+                    item for item in stop_orders
+                    if stop_ids and self._order_identifiers(item[0]) & stop_ids
+                ]
+                if len(identified) == 1:
+                    _, confirmed_stop = identified[0]
+                else:
+                    # Some Binance/CCXT versions return an algo ID from create
+                    # but a different normalized ID from fetch_open_orders.
+                    # Fall back only to a unique same-side stop at our requested level.
+                    requested_matches = [
+                        item for item in stop_orders if item[1] == requested_stop_dec
+                    ]
+                    if len(requested_matches) == 1:
+                        _, confirmed_stop = requested_matches[0]
+                    else:
+                        confirmed_stop = None
+
+                if entry_price is not None and confirmed_stop is not None:
+                    return float(entry_price), float(confirmed_stop)
+                if entry_price is None:
+                    last_problem = f"could not confirm one live {direction} position entry for {symbol}"
+                elif confirmed_stop is None:
+                    last_problem = f"could not confirm the resting stop trigger for {symbol}"
+            except Exception as exc:
+                last_problem = str(exc)
+
+            if attempt + 1 < attempts:
+                time.sleep(0.25)
+
+        raise RuntimeError(f"Could not verify live entry and stop for {symbol}: {last_problem}")
+
     def execute_bracket_trade(
         self,
         symbol: str,
@@ -729,16 +869,58 @@ class LiveExchangeAdapter:
         atr: Optional[float] = None
     ) -> Dict[str, Any]:
         """
-        Places market entry order followed immediately by Stop-Loss and Take-Profit bracket orders.
-        Enforces exact 1:3 Risk-Reward Ratio (RR) relative to actual entry price with tick-size precision formatting.
+        Places the market entry, then the stop, confirms both against exchange state,
+        and only then submits a target at exactly 3x the confirmed entry-to-stop risk.
         """
+        if direction not in ("LONG", "SHORT"):
+            raise ValueError(f"Unsupported trade direction: {direction}")
+
         side = "buy" if direction == "LONG" else "sell"
         opp_side = "sell" if direction == "LONG" else "buy"
 
         market = self.exchange.market(symbol)
         formatted_amount = float(self.exchange.amount_to_precision(symbol, amount))
         formatted_sl = float(self.exchange.price_to_precision(symbol, stop_loss))
-        formatted_tp = float(self.exchange.price_to_precision(symbol, take_profit))
+
+        def abort_entry(reason: str, cause: Exception) -> None:
+            """Close the exposed position and verify its orders are removed."""
+            cleanup_errors = []
+            try:
+                self.exchange.create_order(
+                    symbol=symbol,
+                    type="MARKET",
+                    side=opp_side,
+                    amount=formatted_amount,
+                    params={"reduceOnly": True}
+                )
+            except Exception as close_error:
+                try:
+                    still_open = any(
+                        position.get("symbol") == symbol for position in self.get_open_positions()
+                    )
+                    if still_open:
+                        cleanup_errors.append(f"position close failed: {close_error}")
+                    else:
+                        logger.info(f"Position on {symbol} was already closed during bracket recovery.")
+                except Exception as verify_error:
+                    cleanup_errors.append(
+                        f"position close failed ({close_error}); flat state could not be verified ({verify_error})"
+                    )
+            try:
+                self.cancel_all_orders_for_symbol(symbol)
+            except Exception as cancel_error:
+                cleanup_errors.append(f"order cleanup failed: {cancel_error}")
+
+            if cleanup_errors:
+                logger.critical(
+                    f"[BRACKET_RECOVERY] {symbol}: {reason}; recovery needs inspection: "
+                    f"{' | '.join(cleanup_errors)}"
+                )
+                raise RuntimeError(
+                    f"{reason}; position/order cleanup could not be fully verified: "
+                    f"{' | '.join(cleanup_errors)}"
+                ) from cause
+            raise RuntimeError(f"{reason}; the entry was closed and its orders were cleared") from cause
 
         # 1. Market Entry Order
         logger.info(f"Executing MARKET {side.upper()} for {formatted_amount} {symbol}...")
@@ -752,58 +934,25 @@ class LiveExchangeAdapter:
         if entry_price <= 0:
             ticker = self.exchange.fetch_ticker(symbol)
             entry_price = float(ticker.get("last") or ticker.get("close") or 0.0)
+        if entry_price <= 0:
+            abort_entry(
+                f"Could not confirm a positive market fill price for {symbol}",
+                ValueError("Market order and ticker returned no usable price")
+            )
 
-        bracket_entry = entry_price
-        # Precise 1:3 RR Re-anchoring from actual entry price if ATR is supplied
+        # Choose and place only the stop first. The target is deliberately not
+        # calculated from this estimate; it will use the exchange-confirmed fill
+        # and resting stop trigger queried immediately after this order is placed.
         if atr is not None and atr > 0 and entry_price > 0:
             tick = market_tick_size(market, getattr(self.exchange, "precisionMode", None))
             try:
-                bracket_entry, formatted_sl, formatted_tp, _ = calculate_bracket_prices(
+                _, formatted_sl, _, _ = calculate_bracket_prices(
                     entry_price, atr, direction, tick_size=tick
                 )
             except Exception as bracket_error:
-                try:
-                    self.exchange.create_order(
-                        symbol=symbol,
-                        type="MARKET",
-                        side=opp_side,
-                        amount=formatted_amount,
-                        params={"reduceOnly": True}
-                    )
-                finally:
-                    self.cancel_all_orders_for_symbol(symbol)
-                raise RuntimeError(
-                    f"Could not create a valid strict 1:3 bracket for {symbol}; the entry was closed"
-                ) from bracket_error
-            # Values derived from an exact tick size are already exchange
-            # aligned. Use CCXT formatting only when market metadata lacked a
-            # tick, then validate the returned levels against the same anchor.
+                abort_entry(f"Could not create a valid stop for {symbol}", bracket_error)
             if tick is None:
                 formatted_sl = float(self.exchange.price_to_precision(symbol, formatted_sl))
-                formatted_tp = float(self.exchange.price_to_precision(symbol, formatted_tp))
-            logger.info(
-                f"[PRECISE_RR] Re-anchored exact 1:3 RR from tick reference ${bracket_entry:.8g} "
-                f"(actual fill ${entry_price:.8g}): "
-                f"SL=${formatted_sl}, TP=${formatted_tp}"
-            )
-            risk_distance = abs(bracket_entry - formatted_sl)
-            reward_distance = abs(formatted_tp - bracket_entry)
-            if risk_distance <= 0 or abs(reward_distance / risk_distance - 3.0) > 1e-8:
-                try:
-                    self.exchange.create_order(
-                        symbol=symbol,
-                        type="MARKET",
-                        side=opp_side,
-                        amount=formatted_amount,
-                        params={"reduceOnly": True}
-                    )
-                finally:
-                    self.cancel_all_orders_for_symbol(symbol)
-                raise ValueError(
-                    f"Exchange precision cannot represent strict 1:3 levels for {symbol}: "
-                    f"reference={bracket_entry}, SL={formatted_sl}, TP={formatted_tp}; "
-                    "the entry was immediately closed"
-                )
 
         # 2. Stop-Loss Bracket Order (reduce-only)
         sl_order = None
@@ -818,17 +967,63 @@ class LiveExchangeAdapter:
             logger.info(f"Placed Stop-Loss order at {formatted_sl} for {symbol}.")
         except Exception as e:
             logger.error(f"Failed to place SL bracket order: {e}")
-            self.exchange.create_order(
-                symbol=symbol,
-                type="MARKET",
-                side=opp_side,
-                amount=formatted_amount,
-                params={"reduceOnly": True}
-            )
-            self.cancel_all_orders_for_symbol(symbol)
-            raise RuntimeError(f"Could not protect {symbol} entry with a stop; position was closed") from e
+            abort_entry(f"Could not protect {symbol} entry with a stop", e)
 
-        # 3. Take-Profit Bracket Order (reduce-only)
+        # Query the live position entry and the resting stop trigger after the SL
+        # exists. These exchange values, rather than the pre-entry estimate,
+        # determine the target distance.
+        try:
+            bracket_entry, confirmed_sl = self._query_filled_entry_and_stop(
+                symbol=symbol,
+                direction=direction,
+                stop_order=sl_order or {},
+                requested_stop=formatted_sl,
+                exit_side=opp_side,
+            )
+            entry_dec = Decimal(str(bracket_entry))
+            sl_dec = Decimal(str(confirmed_sl))
+            risk_distance = abs(entry_dec - sl_dec)
+            if risk_distance <= 0:
+                raise ValueError("Confirmed entry and stop have zero risk distance")
+            if direction == "LONG" and sl_dec >= entry_dec:
+                raise ValueError("Confirmed long stop is not below the position entry")
+            if direction == "SHORT" and sl_dec <= entry_dec:
+                raise ValueError("Confirmed short stop is not above the position entry")
+
+            # `take_profit` remains in the method signature for existing callers,
+            # but live execution derives the target only from exchange-confirmed values.
+            target_dec = entry_dec + (risk_distance * 3 if direction == "LONG" else -risk_distance * 3)
+            if target_dec <= 0:
+                raise ValueError("The exact 1:3 target is not a positive price")
+            formatted_tp_text = self.exchange.price_to_precision(symbol, float(target_dec))
+            formatted_tp_dec = Decimal(str(formatted_tp_text))
+            reward_distance = (
+                formatted_tp_dec - entry_dec
+                if direction == "LONG"
+                else entry_dec - formatted_tp_dec
+            )
+            if reward_distance != risk_distance * 3:
+                raise ValueError(
+                    "Exchange price precision cannot represent an exact 1:3 target from "
+                    f"the confirmed position and stop (entry={entry_dec}, SL={sl_dec}, "
+                    f"requested TP={target_dec}, exchange TP={formatted_tp_dec})"
+                )
+            if (direction == "LONG" and formatted_tp_dec <= entry_dec) or (
+                direction == "SHORT" and formatted_tp_dec >= entry_dec
+            ):
+                raise ValueError("The exchange-formatted take-profit is on the wrong side of entry")
+            formatted_tp = float(formatted_tp_dec)
+            formatted_sl = float(sl_dec)
+        except Exception as e:
+            logger.error(f"Could not derive a verified exact 1:3 target for {symbol}: {e}")
+            abort_entry(f"Could not verify an exact 1:3 bracket for {symbol}: {e}", e)
+
+        logger.info(
+            f"[PRECISE_RR] Confirmed exchange entry ${bracket_entry:.8g} and stop ${formatted_sl:.8g}; "
+            f"risk distance ${float(risk_distance):.8g}, TP ${formatted_tp:.8g} (1:3)."
+        )
+
+        # 3. Take-Profit is submitted only after confirming the live entry and SL.
         tp_order = None
         try:
             tp_order = self.exchange.create_order(
@@ -841,19 +1036,11 @@ class LiveExchangeAdapter:
             logger.info(f"Placed Take-Profit order at {formatted_tp} for {symbol}.")
         except Exception as e:
             logger.error(f"Failed to place TP bracket order: {e}")
-            self.exchange.create_order(
-                symbol=symbol,
-                type="MARKET",
-                side=opp_side,
-                amount=formatted_amount,
-                params={"reduceOnly": True}
-            )
-            self.cancel_all_orders_for_symbol(symbol)
-            raise RuntimeError(f"Could not complete {symbol} bracket; position was closed") from e
+            abort_entry(f"Could not complete {symbol} bracket", e)
 
         return {
             "entry_order": entry_order,
-            "entry_price": entry_price,
+            "entry_price": bracket_entry,
             "bracket_reference_price": bracket_entry,
             "amount": formatted_amount,
             "sl_order": sl_order,
