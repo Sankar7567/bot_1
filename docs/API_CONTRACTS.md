@@ -57,6 +57,19 @@ Data contracts in `src/strategy/models.py`:
 - `ConfirmationWindow`: `window_id`, `start_timestamp`, `end_timestamp`, `candidates`, `status`, `is_slot_claimed`, `winning_symbol`, `winning_signal`, `window_consumed`.
 - `TradeSignal`: `signal_id`, `window_id`, `symbol`, `direction`, `trigger_15m_timestamp`, `confirmation_1m_timestamp`, `trigger_price`, `confirmation_price`, `candidate_rank`, `created_at`, `expires_at`.
 
+### 1.10 Swing Detection Engine Interface (`src/indicators/swing_points.py`)
+
+The `src/indicators/swing_points.py` module detects confirmed swing high and low pivot points on actual market OHLC data and calculates stop-loss levels with buffer offsets:
+- `find_confirmed_pivots(candles: List[Candle], left_bars: int = 5, right_bars: int = 5) -> List[SwingPivot]`: Scans a chronological candle sequence for 5L/5R pivots satisfying strict inequality ($Low_i < Low_{j,k}$ or $High_i > High_{j,k}$). Confirmed at bar $i + \text{right\_bars}$.
+- `get_latest_eligible_pivot(candles: List[Candle], pivot_type: PivotType, left_bars: int = 5, right_bars: int = 5, lookback_bars: int = 100) -> Optional[SwingPivot]`: Searches backwards for the most recent confirmed swing pivot of the specified type within the lookback window.
+- `calculate_swing_stop_loss(entry_price: float, pivot: SwingPivot, is_long: bool, buffer_ratio: float = 0.001) -> StopLossCalculation`: Computes stop loss price and distance with configurable buffer (LONG: $SL = \text{Low} \times (1 - \text{buffer})$, SHORT: $SL = \text{High} \times (1 + \text{buffer})$) and validates stop distance.
+- `SwingDetector`: Stateful per-symbol wrapper providing `get_latest_swing_low` and `get_latest_swing_high`.
+
+Data contracts in `src/indicators/swing_points.py`:
+- `PivotType`: `SWING_LOW`, `SWING_HIGH`.
+- `SwingPivot`: `symbol`, `interval`, `pivot_type`, `bar_index`, `pivot_timestamp`, `confirmation_timestamp`, `price`, `left_bars`, `right_bars`.
+- `StopLossCalculation`: `pivot`, `entry_price`, `buffer_ratio`, `stop_price`, `stop_distance`, `is_valid`, `rejection_reason`.
+
 ### 1.8 Heikin-Ashi Indicator Interface (`src/indicators/`)
 
 The `src/indicators/heikin_ashi.py` module provides pure mathematical Heikin-Ashi transformations:

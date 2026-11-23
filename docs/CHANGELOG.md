@@ -5,6 +5,18 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-23
+### Added
+- Phase 07: Swing Detection Engine implementation.
+- `src/indicators/swing_points.py`: Pure 5-left/5-right swing pivot detector on actual market OHLC data:
+  - `find_confirmed_pivots()`: Scans chronological candle sequences for confirmed swing highs and lows using strict inequality (equal highs/lows rejected). Checks chronological ordering before evaluation. Zero look-ahead bias: pivot at bar $i$ confirmed only after bar $i + \text{right\_bars}$ closes.
+  - `get_latest_eligible_pivot()`: Searches backwards from the most recent confirmable bar within a configurable lookback window to return the latest eligible pivot.
+  - `calculate_swing_stop_loss()`: Computes stop price and distance with a configurable buffer ratio (LONG: $SL = \text{SwingLow} \times (1 - \text{buffer})$; SHORT: $SL = \text{SwingHigh} \times (1 + \text{buffer})$). Returns `StopLossCalculation` with `is_valid=False` on wrong pivot type, non-positive stop, or stop on the wrong side of entry.
+  - `SwingDetector`: Stateful per-symbol/interval wrapper with `get_latest_swing_low` and `get_latest_swing_high` convenience methods.
+- `src/indicators/__init__.py`: Updated public exports.
+- `docs/API_CONTRACTS.md`: Added Section 1.10 documenting the Swing Detection Engine interface and data contracts.
+- `tests/unit/test_swing_points.py`: 11 unit tests covering hand-calculated pivot low/high, strict inequality enforcement, equal high/low rejection, zero look-ahead bias verification, lookback limits, long/short stop loss buffer calculations, chronological sequence validation, and stateful `SwingDetector` wrapper.
+
 ## [0.5.0] - 2026-11-23
 ### Added
 - Phase 06: Multi-Symbol Strategy Engine implementation (Replacement Prompt 06 / Strategy Amendment v1.1).
