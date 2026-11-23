@@ -102,8 +102,33 @@
    - `test_live_testnet_historical_kline_seeding` successfully retrieved live 1m and 15m closed candles from Binance Futures Testnet REST API.
    - Reached 91.49% overall test coverage across 924 statements.
 
+## Phase 05: Heikin-Ashi Engine
+**Date:** 2026-11-23  
+**Status:** Completed  
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer  
+
+### Work Completed:
+1. **Mathematical Formulation & Implementation:**
+   - Implemented `src/indicators/heikin_ashi.py` according to project formulas:
+     - $HA\_Close = (Open + High + Low + Close) / 4$
+     - First $HA\_Open = (Open + Close) / 2$
+     - Subsequent $HA\_Open = (Prev\_HA\_Open + Prev\_HA\_Close) / 2$
+     - $HA\_High = \max(High, HA\_Open, HA\_Close)$
+     - $HA\_Low = \min(Low, HA\_Open, HA\_Close)$
+   - Implemented `HeikinAshiCandle` with properties `is_bullish`, `is_bearish`, `is_doji`, `body_size`, and wicks.
+   - Enforced floating-point epsilon ($10^{-8}$) for exact doji identification.
+   - Enforced strict closure requirement: `UnfinishedCandleError` raised if incomplete candle passed.
+   - Implemented `calculate_heikin_ashi_series` with chronological sequence verification.
+   - Implemented stateful `HeikinAshiSeries` manager for incremental candle ingestion and rolling history.
+2. **Verification & Testing:**
+   - Tested against independently hand-calculated test fixtures (first candle, subsequent bullish candle, doji candle, extreme wick absorption).
+   - Validated both 1m and 15m timeframes.
+   - Executed full test suite: 83 passed, 1 skipped (testnet account query requiring private key).
+   - Achieved 91.58% total project branch coverage across 1,031 statements.
+
 ### Next Actions:
-- Proceed to Phase 05: Heikin-Ashi Engine upon review and approval.
+- Proceed to Phase 06: Multi-Symbol Strategy Engine upon review and approval.
+
 
 
 

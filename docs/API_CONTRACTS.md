@@ -39,6 +39,16 @@ All requests target the Binance USDⓈ-M Futures Testnet:
 | `DELETE`| `/fapi/v1/order` | Cancel active protective order (`clientOrderId` or `orderId`). | 1 |
 | `GET` | `/fapi/v1/openOrders` | Query all currently open orders (for crash recovery reconciliation). | 1 or 40 |
 
+### 1.8 Heikin-Ashi Indicator Interface (`src/indicators/`)
+
+The `src/indicators/heikin_ashi.py` module provides pure mathematical Heikin-Ashi transformations:
+- `calculate_heikin_ashi_candle(candle: Candle, prev_ha: Optional[HeikinAshiCandle]) -> HeikinAshiCandle`: Transforms single closed candle using documented formulas.
+- `calculate_heikin_ashi_series(candles: List[Candle]) -> List[HeikinAshiCandle]`: Computes chronological HA sequence across a series.
+- `HeikinAshiSeries`: Stateful manager per `(symbol, interval)` maintaining rolling calculated HA bars with idempotent updates and capacity eviction.
+
+Data contracts in `src/indicators/heikin_ashi.py`:
+- `HeikinAshiCandle`: `symbol`, `interval`, `open_time`, `close_time`, `ha_open`, `ha_high`, `ha_low`, `ha_close`, `is_closed`. Helpers: `is_bullish`, `is_bearish`, `is_doji`, `body_size`, `upper_wick`, `lower_wick`.
+
 ### 1.7 Market Data Engine Interface (`src/market_data/`)
 
 The `MarketDataEngine` coordinates 1m and 15m candle streaming and history across monitored candidate symbols:

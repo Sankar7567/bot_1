@@ -5,6 +5,13 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-23
+### Added
+- Phase 05: Heikin-Ashi Calculation Engine implementation.
+- `src/indicators/heikin_ashi.py`: Pure mathematical Heikin-Ashi formulas, `HeikinAshiCandle` model, series generator, and stateful `HeikinAshiSeries` manager.
+- `src/indicators/exceptions.py`: Domain exceptions `InconsistentDataError` and `UnfinishedCandleError`.
+- Comprehensive unit tests matching independently hand-calculated test vectors for initial bar, subsequent bullish/bearish bars, doji bars, and extreme wicks.
+
 ## [0.3.0] - 2026-11-23
 ### Added
 - Phase 04: Market Data Engine implementation.
