@@ -328,6 +328,30 @@ class BinanceFuturesClient:
 
     return tickers
 
+  async def get_klines(
+      self,
+      symbol: str,
+      interval: str,
+      limit: int = 100,
+      start_time: Optional[int] = None,
+      end_time: Optional[int] = None,
+  ) -> List[List[Any]]:
+    """Retrieves historical OHLCV klines from Binance Futures REST API."""
+    params: Dict[str, Any] = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": min(limit, 1500),
+    }
+    if start_time is not None:
+      params["startTime"] = start_time
+    if end_time is not None:
+      params["endTime"] = end_time
+
+    # Weight is 5 for limit < 500, 10 for 500-1000, 20 for > 1000
+    weight = 5 if limit < 500 else (10 if limit <= 1000 else 20)
+    data = await self._request("GET", "/fapi/v1/klines", params=params, weight=weight)
+    return data if isinstance(data, list) else []
+
   async def get_symbol_filters(self, symbol: str) -> SymbolFilter:
     """Retrieves parsed filters for a specific symbol."""
     exchange_info = await self.get_exchange_info()

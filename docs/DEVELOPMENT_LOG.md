@@ -83,7 +83,27 @@
    - `test_live_testnet_market_scan` successfully queried live Binance USDⓈ-M Futures Testnet, ranked live contracts, and verified contract eligibility.
    - Overall test coverage reached 93.96%.
 
+## Phase 04: Market Data Engine
+**Date:** 2026-11-23  
+**Status:** Completed  
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer  
+
+### Work Completed:
+1. **Market Data Architecture & Implementation:**
+   - Implemented `src/market_data/models.py` defining immutable `Candle` and `CandleCloseEvent` structures with factory parsers `from_rest_kline` and `from_ws_payload`.
+   - Implemented `src/market_data/candle_buffer.py` providing chronological ring buffer storage per `(symbol, interval)`, with duplicate deduplication, out-of-order handling, and gap detection.
+   - Enforced strict candle completion requirement: unfinished candles (`is_closed == False`, `k.x == False`) are completely rejected from closed history buffers.
+   - Implemented `src/market_data/feed.py` providing `BinanceKlineWebSocket` supporting multi-stream combined subscriptions (`/stream?streams=...`) with exponential backoff auto-reconnect and reconnect hooks.
+   - Implemented `src/market_data/engine.py` coordinating historical REST pre-seeding, live WebSocket ingestion, REST snapshot reconciliation, and event dispatching across candidate symbols.
+2. **Amendment v1.1 Multi-Symbol Concurrency Support:**
+   - Designed `set_monitored_universe(symbols)` to concurrently seed history and stream 1m and 15m candles for up to 20 candidate symbols in parallel.
+3. **Verification & Testing:**
+   - Executed full test suite: 75 passed, 1 skipped (testnet account query requiring private key).
+   - `test_live_testnet_historical_kline_seeding` successfully retrieved live 1m and 15m closed candles from Binance Futures Testnet REST API.
+   - Reached 91.49% overall test coverage across 924 statements.
+
 ### Next Actions:
-- Proceed to Phase 04: Market Data Engine upon review and approval.
+- Proceed to Phase 05: Heikin-Ashi Engine upon review and approval.
+
 
 
