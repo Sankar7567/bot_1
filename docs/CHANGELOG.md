@@ -5,6 +5,17 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-23
+### Added
+- Phase 08: Risk Management and Position Sizing implementation.
+- `src/risk/exceptions.py`: `RiskValidationError`, `InsufficientEquityError`, `InvalidStopDistanceError`, `LiquidationRiskError`.
+- `src/risk/models.py`: `BracketInfo` (resolved leverage tier), `SizingInput` (all trade parameters), `SizingResult` (complete validation output).
+- `src/risk/calculator.py`: Pure stateless sizing formulas — `calculate_risk_budget`, `calculate_stop_distance`, `calculate_tp_price`, `calculate_friction_adjusted_quantity` (RISK_MODEL.md §2.2 formula), `calculate_required_margin`, `estimate_liquidation_price` (RISK_MODEL.md §4.1 formula), `is_liq_price_safer_than_sl`, `compute_pnl_at_target`.
+- `src/risk/brackets.py`: `get_bracket_for_notional`, `get_max_eligible_leverage` — bracket sorting and first-fit matching against sorted notional caps.
+- `src/risk/validator.py`: `truncate_to_step_size` (always floor, integer-arithmetic), `round_price_to_tick`, `validate_and_size_position` (13-step sequential validation: equity, risk budget, stop distance, friction quantity, step truncation, minQty, maxQty, TP, notional, minNotional, margin availability, liquidation guard).
+- `src/risk/__init__.py`: Public API exports.
+- `tests/unit/test_risk.py`: 68 unit tests across 11 test classes, covering all hand-calculated reference vectors from RISK_MODEL.md §5.
+
 ## [0.6.0] - 2026-11-23
 ### Added
 - Phase 07: Swing Detection Engine implementation.

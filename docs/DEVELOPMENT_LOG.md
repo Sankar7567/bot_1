@@ -155,3 +155,43 @@
 
 
 
+
+## Phase 08: Risk Management and Position Sizing
+**Date:** 2026-11-23
+**Status:** Completed
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer
+
+### Work Completed:
+1. **Risk Engine Architecture & Implementation:**
+   - `src/risk/calculator.py`: Pure stateless sizing functions implementing `RISK_MODEL.md §2.2` exactly.
+     - `calculate_friction_adjusted_quantity`: denominator = `ΔP_sl + P_entry × (r_fee + r_slip) + P_sl × r_fee`.
+     - `estimate_liquidation_price`: LONG: `P_entry × (1 − 1/L + MMR)`; SHORT: `P_entry × (1 + 1/L − MMR)`.
+     - `calculate_tp_price`: 3R target from stop distance.
+     - `compute_pnl_at_target`: net PnL with both entry and exit taker fees.
+   - `src/risk/brackets.py`: Bracket matching sorts tiers by `notional_cap` ascending, returns first tier where `notional ≤ cap`. Falls back to last tier when notional exceeds all caps.
+   - `src/risk/validator.py`: 13-step sequential validation producing an authoritative `SizingResult`:
+     1. Equity sanity.
+     2. Risk budget calculation.
+     3. Stop distance (direction-aware, positive required).
+     4. Friction-adjusted quantity.
+     5. Step-size truncation (always floor, integer arithmetic to avoid float drift).
+     6. minQty filter rejection (never increase quantity).
+     7. maxQty filter rejection.
+     8. TP price calculation.
+     9. Notional and leverage from bracket.
+     10. minNotional filter rejection (never increase quantity).
+     11. Required isolated margin calculation.
+     12. Margin availability check.
+     13. Liquidation guard (stop must fire before liquidation; rejected otherwise).
+   - `src/risk/models.py`: `BracketInfo`, `SizingInput`, `SizingResult` frozen dataclasses.
+   - `src/risk/exceptions.py`: Structured exception taxonomy.
+2. **Verification & Testing:**
+   - 68 unit tests across 11 test classes, all passing.
+   - Primary hand-calculated vector from `RISK_MODEL.md §5` verified to 6 significant figures:
+     - `friction_qty = 100.0 / 2.149 ≈ 46.5333`, `final_qty = 46.533` (step=0.001).
+   - Liquidation guard verified: LONG liq=95.4 < sl=98 → safe; LONG liq=99.6 > sl=97 → rejected.
+   - Executed full test suite: **184 passed, 1 skipped** (testnet account key).
+   - Total project branch coverage: **89.66%** across 1,560 statements.
+
+### Next Actions:
+- Proceed to Phase 09: Binance Order Execution Engine upon review and approval.

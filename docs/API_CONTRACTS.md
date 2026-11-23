@@ -70,6 +70,34 @@ Data contracts in `src/indicators/swing_points.py`:
 - `SwingPivot`: `symbol`, `interval`, `pivot_type`, `bar_index`, `pivot_timestamp`, `confirmation_timestamp`, `price`, `left_bars`, `right_bars`.
 - `StopLossCalculation`: `pivot`, `entry_price`, `buffer_ratio`, `stop_price`, `stop_distance`, `is_valid`, `rejection_reason`.
 
+### 1.11 Risk Management Engine Interface (`src/risk/`)
+
+The `src/risk/` package performs end-to-end position sizing and trade validation:
+
+**`src/risk/calculator.py`** — Pure stateless formulas:
+- `calculate_risk_budget(equity, risk_ratio=0.10) -> float`: Returns `equity × risk_ratio`.
+- `calculate_stop_distance(entry_price, sl_price, is_long) -> float`: Returns `|entry − sl|`; raises if ≤ 0.
+- `calculate_tp_price(entry_price, sl_price, is_long, rr_ratio=3.0) -> float`: LONG: `entry + rr × dist`; SHORT: `entry − rr × dist`.
+- `calculate_friction_adjusted_quantity(risk_budget, stop_distance, entry_price, sl_price, taker_fee_rate=0.0005, slippage_rate=0.0005) -> float`: $Q = \frac{R}{\Delta P_{sl} + P_e(r_f + r_s) + P_{sl} \cdot r_f}$.
+- `calculate_required_margin(quantity, entry_price, leverage) -> float`: `(qty × entry) / leverage`.
+- `estimate_liquidation_price(entry_price, leverage, is_long, maint_margin_ratio) -> float`: LONG: $P_e(1 - 1/L + MMR)$; SHORT: $P_e(1 + 1/L - MMR)$.
+- `is_liq_price_safer_than_sl(liq_price, sl_price, is_long) -> bool`: True if stop fires before liquidation.
+- `compute_pnl_at_target(quantity, entry_price, target_price, is_long, taker_fee_rate) -> float`: Net PnL with two-sided fees.
+
+**`src/risk/brackets.py`** — Leverage bracket matching:
+- `get_bracket_for_notional(symbol_brackets, notional) -> Optional[BracketInfo]`: First-fit from sorted tiers.
+- `get_max_eligible_leverage(symbol_brackets, notional) -> int`: Convenience wrapper returning `BracketInfo.max_leverage`.
+
+**`src/risk/validator.py`** — Full validation pipeline:
+- `truncate_to_step_size(quantity, step_size) -> float`: Floor-only truncation with integer arithmetic.
+- `round_price_to_tick(price, tick_size) -> float`: Round-half-up to nearest tick.
+- `validate_and_size_position(sizing_input: SizingInput) -> SizingResult`: 13-step sequential validation.
+
+Data contracts in `src/risk/models.py`:
+- `BracketInfo`: `bracket_number`, `max_leverage`, `notional_cap`, `notional_floor`, `maint_margin_ratio`.
+- `SizingInput`: `symbol`, `equity`, `is_long`, `entry_price`, `sl_price`, `step_size`, `min_qty`, `max_qty`, `min_notional`, `tick_size`, `available_margin`, `bracket`, `risk_ratio`, `rr_ratio`, `taker_fee_rate`, `slippage_rate`.
+- `SizingResult`: `is_valid`, `rejection_reason`, `symbol`, `is_long`, `equity`, `risk_budget`, `stop_distance`, `raw_quantity`, `friction_adjusted_qty`, `final_quantity`, `entry_price`, `sl_price`, `tp_price`, `leverage`, `required_margin`, `estimated_liq_price`, `maint_margin_ratio`.
+
 ### 1.8 Heikin-Ashi Indicator Interface (`src/indicators/`)
 
 The `src/indicators/heikin_ashi.py` module provides pure mathematical Heikin-Ashi transformations:
