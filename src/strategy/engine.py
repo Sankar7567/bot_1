@@ -3,10 +3,24 @@
 Coordinates global 15-minute confirmation windows, concurrent multi-candle 1m
 monitoring across top-20 candidates, first-trigger-wins slot arbitration,
 and deterministic tie-breaking.
+
+Key Design Decisions
+--------------------
+* Simultaneous same-timestamp confirmations are resolved deterministically by
+  initial snapshot rank (ascending), with alphabetical symbol name as the
+  secondary tie-breaker.  ``on_1m_candle_closed`` accumulates per-timestamp
+  confirmations into ``_pending_confirmations`` and flushes each complete
+  timestamp batch through ``process_simultaneous_confirmations``.
+* The engine-level ``asyncio.Lock`` guarantees that the flush step is atomic:
+  only one task can claim the global slot for a given 1m timestamp batch.
+* A position lock prevents new entries while an open trade is active.
+* Risk-validation failure marks the window as CONSUMED; no secondary candidate
+  may be chosen within the same 15m window.
 """
 
 import asyncio
 import time
+from collections import defaultdict
 from typing import Callable, Coroutine, Dict, List, Optional
 from src.indicators.heikin_ashi import HeikinAshiCandle
 from src.market_data.models import CandleCloseEvent
@@ -41,6 +55,10 @@ class MultiSymbolStrategyEngine:
     self._window_history: List[ConfirmationWindow] = []
     self._lock = asyncio.Lock()
 
+    # Buffer: 1m_close_time_ms -> List[CandidateState] that aligned on that bar.
+    # Flushed atomically once all same-timestamp events have been evaluated.
+    self._pending_confirmations: Dict[int, List[CandidateState]] = defaultdict(list)
+
   @property
   def active_window(self) -> Optional[ConfirmationWindow]:
     """Returns the currently active confirmation window if any."""
@@ -73,6 +91,9 @@ class MultiSymbolStrategyEngine:
         ConfirmationWindow: The newly registered confirmation window.
     """
     async with self._lock:
+      # Flush and discard any pending confirmations from the expiring window
+      self._pending_confirmations.clear()
+
       # Expire any existing active window
       if self._active_window and self._active_window.is_active:
         self._expire_window_internal(self._active_window, timestamp_ms)
@@ -135,12 +156,18 @@ class MultiSymbolStrategyEngine:
   ) -> Optional[TradeSignal]:
     """Evaluates a newly closed 1m Heikin-Ashi candle for a monitored candidate.
 
+    Accumulates aligned confirmations per 1m close_time into a pending batch.
+    The caller MUST flush each timestamp batch by calling
+    ``flush_1m_timestamp_batch(close_time_ms)`` after all symbols for that
+    1m bar have been processed.  This guarantees deterministic rank-based
+    tie-breaking across simultaneous confirmations.
+
     Args:
         event: 1m CandleCloseEvent.
         ha_1m: Corresponding 1m HeikinAshiCandle.
 
     Returns:
-        Optional[TradeSignal]: Emitted if this candidate wins the global slot.
+        None always.  Signals are emitted via ``flush_1m_timestamp_batch``.
     """
     window = self._active_window
     if not window or not window.is_active:
@@ -188,47 +215,88 @@ class MultiSymbolStrategyEngine:
       # Misaligned or Doji -> continue monitoring on subsequent 1m bars
       return None
 
-    # Candidate has qualified! Record confirmation
+    # Mark confirmation details on candidate and buffer for batch arbitration
     candidate.confirmation_candle = ha_1m
     candidate.confirmed_at = close_time
 
-    # Arbitrate slot atomically
-    winner = await self.arbitrator.arbitrate_winners(window, [candidate])
-    if not winner or winner.symbol != candidate.symbol:
-      return None
+    async with self._lock:
+      # Re-check inside lock before buffering (slot may have been claimed
+      # concurrently by a different symbol)
+      if not window.is_slot_claimed and not window.window_consumed:
+        self._pending_confirmations[close_time].append(candidate)
+        logger.debug(
+            "Candidate %s aligned at 1m close_time=%d; buffered for batch"
+            " arbitration.",
+            candidate.symbol,
+            close_time,
+        )
 
-    # Generate winning signal
-    signal_id = f"SIG_{window.window_id}_{winner.symbol}_{close_time}"
-    signal = TradeSignal(
-        signal_id=signal_id,
-        window_id=window.window_id,
-        symbol=winner.symbol,
-        direction=winner.direction,
-        trigger_15m_timestamp=winner.registered_at,
-        confirmation_1m_timestamp=close_time,
-        trigger_price=winner.trigger_15m_candle.ha_close,
-        confirmation_price=ha_1m.ha_close,
-        candidate_rank=winner.initial_rank,
-        created_at=int(time.time() * 1000),
-        expires_at=window.end_timestamp,
-    )
+    return None
 
-    window.winning_signal = signal
+  async def flush_1m_timestamp_batch(self, close_time_ms: int) -> Optional[TradeSignal]:
+    """Arbitrates all candidates that confirmed at the same 1m close_time_ms.
 
-    # Dispatch to listeners
-    for listener in self._signal_listeners:
-      try:
-        await listener(signal)
-      except Exception as l_err:
-        logger.error("Error in trade signal listener: %s", l_err)
+    Must be called once per 1m bar, AFTER all ``on_1m_candle_closed`` calls
+    for that bar have completed.  Applies deterministic rank-based tie-breaking
+    across the batch, produces at most one TradeSignal, and clears the pending
+    buffer for that timestamp.
 
-    return signal
+    Args:
+        close_time_ms: The 1m candle close_time for which to flush.
+
+    Returns:
+        Optional[TradeSignal]: The winning signal, or None if no candidates
+        confirmed or the slot is already claimed.
+    """
+    async with self._lock:
+      window = self._active_window
+      if not window or not window.is_active:
+        self._pending_confirmations.pop(close_time_ms, None)
+        return None
+
+      if window.is_slot_claimed or window.window_consumed:
+        self._pending_confirmations.pop(close_time_ms, None)
+        return None
+
+      batch = self._pending_confirmations.pop(close_time_ms, [])
+      if not batch:
+        return None
+
+      if self.has_open_position():
+        logger.info(
+            "Batch flush for close_time=%d skipped: account position is open.",
+            close_time_ms,
+        )
+        return None
+
+      # Delegate to arbitrator for deterministic rank-based tie-breaking
+      winner = await self.arbitrator.arbitrate_winners(window, batch)
+      if not winner or not winner.confirmation_candle:
+        return None
+
+      signal = self._build_signal(window, winner, close_time_ms)
+      window.winning_signal = signal
+
+      await self._dispatch_signal(signal)
+      return signal
 
   async def process_simultaneous_confirmations(
       self,
       candidates: List[CandidateState],
   ) -> Optional[TradeSignal]:
-    """Arbitrates among multiple candidate confirmations occurring at the same 1m timestamp."""
+    """Arbitrates among multiple candidate confirmations occurring at the same 1m timestamp.
+
+    Public API for external callers (e.g. orchestrator) that have pre-collected
+    a list of simultaneously confirming candidates.  Rank-based tie-breaking is
+    enforced by the arbitrator.
+
+    Args:
+        candidates: List of CandidateState objects that all confirmed at the
+            same 1m candle close timestamp.
+
+    Returns:
+        Optional[TradeSignal]: The winning signal, or None.
+    """
     window = self._active_window
     if not window or not window.is_active or self.has_open_position():
       return None
@@ -237,30 +305,51 @@ class MultiSymbolStrategyEngine:
     if not winner or not winner.confirmation_candle:
       return None
 
-    signal_id = f"SIG_{window.window_id}_{winner.symbol}_{winner.confirmed_at}"
-    signal = TradeSignal(
+    signal = self._build_signal(
+        window, winner, winner.confirmed_at or int(time.time() * 1000)
+    )
+    window.winning_signal = signal
+
+    await self._dispatch_signal(signal)
+    return signal
+
+  # --------------------------------------------------------------------------
+  # Signal Construction & Dispatch
+  # --------------------------------------------------------------------------
+
+  def _build_signal(
+      self,
+      window: ConfirmationWindow,
+      winner: CandidateState,
+      confirmation_ts_ms: int,
+  ) -> TradeSignal:
+    """Constructs a TradeSignal from an arbitrated winner."""
+    signal_id = f"SIG_{window.window_id}_{winner.symbol}_{confirmation_ts_ms}"
+    return TradeSignal(
         signal_id=signal_id,
         window_id=window.window_id,
         symbol=winner.symbol,
         direction=winner.direction,
         trigger_15m_timestamp=winner.registered_at,
-        confirmation_1m_timestamp=winner.confirmed_at or 0,
+        confirmation_1m_timestamp=confirmation_ts_ms,
         trigger_price=winner.trigger_15m_candle.ha_close,
-        confirmation_price=winner.confirmation_candle.ha_close,
+        confirmation_price=(
+            winner.confirmation_candle.ha_close
+            if winner.confirmation_candle
+            else winner.trigger_15m_candle.ha_close
+        ),
         candidate_rank=winner.initial_rank,
         created_at=int(time.time() * 1000),
         expires_at=window.end_timestamp,
     )
 
-    window.winning_signal = signal
-
+  async def _dispatch_signal(self, signal: TradeSignal) -> None:
+    """Dispatches a winning TradeSignal to all registered listeners."""
     for listener in self._signal_listeners:
       try:
         await listener(signal)
       except Exception as l_err:
         logger.error("Error in trade signal listener: %s", l_err)
-
-    return signal
 
   # --------------------------------------------------------------------------
   # Risk Validation Handoff & Window Consumption
@@ -271,11 +360,16 @@ class MultiSymbolStrategyEngine:
   ) -> None:
     """Invoked when the winning candidate fails risk validation.
 
-    Marks the window as consumed and prevents any second candidate from being
-    chosen.
+    Marks the window as CONSUMED with no secondary pick permitted in this window.
+    Sets status to EXPIRED so that is_active() correctly returns False.
     """
     if self._active_window and self._active_window.window_id == window_id:
       self._active_window.window_consumed = True
+      self._active_window.status = WindowStatus.EXPIRED
+      # Expire all remaining MONITORING candidates
+      for cand in self._active_window.candidates.values():
+        if cand.status == CandidateStatus.MONITORING:
+          cand.status = CandidateStatus.EXPIRED
       logger.warning(
           "Winning candidate %s failed risk validation (%s). Window %s"
           " consumed with no secondary pick.",
@@ -306,6 +400,7 @@ class MultiSymbolStrategyEngine:
   async def expire_active_window(self, current_time_ms: int) -> None:
     """Explicitly expires the current active confirmation window."""
     async with self._lock:
+      self._pending_confirmations.clear()
       if self._active_window and self._active_window.is_active:
         self._expire_window_internal(self._active_window, current_time_ms)
 
@@ -328,10 +423,13 @@ class MultiSymbolStrategyEngine:
           "registered_at": c.registered_at,
           "status": c.status.value,
           "confirmed_at": c.confirmed_at,
-          "trigger_ha_close": c.trigger_15m_candle.ha_close,
+          # Preserve actual 15m trigger candle timestamps and OHLC
+          "trigger_open_time": c.trigger_15m_candle.open_time,
+          "trigger_close_time": c.trigger_15m_candle.close_time,
           "trigger_ha_open": c.trigger_15m_candle.ha_open,
           "trigger_ha_high": c.trigger_15m_candle.ha_high,
           "trigger_ha_low": c.trigger_15m_candle.ha_low,
+          "trigger_ha_close": c.trigger_15m_candle.ha_close,
       }
 
     return {
@@ -365,8 +463,8 @@ class MultiSymbolStrategyEngine:
       trigger_ha = HeikinAshiCandle(
           symbol=cd["symbol"],
           interval="15m",
-          open_time=cd["registered_at"],
-          close_time=cd["registered_at"] + 899999,
+          open_time=cd["trigger_open_time"],
+          close_time=cd["trigger_close_time"],
           ha_open=cd["trigger_ha_open"],
           ha_high=cd["trigger_ha_high"],
           ha_low=cd["trigger_ha_low"],

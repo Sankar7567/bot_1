@@ -1,15 +1,16 @@
 """Unit tests for Multi-Symbol Strategy Engine (Strategy Amendment v1.1).
 
-Validates all 17 mandatory test scenarios specified in Replacement Prompt 06:
-1. Immediate confirmation
-2. Fifth-candle confirmation
-3. Misaligned candles tolerance
-4. Doji candles tolerance
-5. Simultaneous 15m triggers
-6. ETH confirms before BTC
-7. BTC confirms before ETH
-8. Same-timestamp simultaneous confirmations
-9. Original top-20 ranking tie-breaking
+Validates all 17 mandatory test scenarios specified in Replacement Prompt 06,
+plus additional tests for the corrected simultaneous-confirmation determinism:
+1.  Immediate confirmation
+2.  Fifth-candle confirmation
+3.  Misaligned candles tolerance
+4.  Doji candles tolerance
+5.  Simultaneous 15m triggers
+6.  ETH confirms before BTC
+7.  BTC confirms before ETH
+8.  Same-timestamp simultaneous confirmations (via process_simultaneous_confirmations)
+9.  Original top-20 ranking tie-breaking (arbitrator)
 10. Candidate leaves top 20 during window
 11. New candidate enters top 20 during window
 12. Window expiration with no confirmation
@@ -18,6 +19,11 @@ Validates all 17 mandatory test scenarios specified in Replacement Prompt 06:
 15. Risk validation failure consumes window (no 2nd pick)
 16. Existing position blocks entry
 17. Process restart recovery of active window
+18. flush_1m_timestamp_batch deterministic tie-breaking (rank-based)
+19. flush_1m_timestamp_batch after slot already claimed -> None
+20. handle_risk_validation_failure expires MONITORING candidates
+21. serialize_state preserves actual trigger candle timestamps
+22. on_1m_candle_closed buffers confirmed candidates; flush returns signal
 """
 
 import asyncio
@@ -108,13 +114,23 @@ def make_scanned_symbol(symbol: str, rank: int) -> ScannedSymbol:
   )
 
 
+async def confirm_and_flush(
+    engine: MultiSymbolStrategyEngine,
+    ha_1m: HeikinAshiCandle,
+) -> "Optional[TradeSignal]":
+  """Helper: on_1m_candle_closed then flush_1m_timestamp_batch for that bar."""
+  event = make_candle_close_event(ha_1m)
+  await engine.on_1m_candle_closed(event, ha_1m)
+  return await engine.flush_1m_timestamp_batch(ha_1m.close_time)
+
+
 # ==============================================================================
-# Comprehensive Test Suite (Scenarios 1 through 17)
+# Comprehensive Test Suite (Scenarios 1 through 22)
 # ==============================================================================
 
 
 class TestMultiSymbolStrategyEngine:
-  """Test suite validating all 17 required scenarios for Multi-Symbol Strategy."""
+  """Test suite validating all mandatory scenarios for Multi-Symbol Strategy."""
 
   @pytest.mark.asyncio
   async def test_01_candidate_confirms_immediately(self):
@@ -122,7 +138,6 @@ class TestMultiSymbolStrategyEngine:
     engine = MultiSymbolStrategyEngine()
     t15 = 1700000000000  # 15m candle close
 
-    # 15m trigger: BTC is bullish (LONG)
     snapshot = [make_scanned_symbol("BTCUSDT", rank=1)]
     ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m", open_time=t15 - 900000)}
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
@@ -130,11 +145,8 @@ class TestMultiSymbolStrategyEngine:
     assert engine.active_window is not None
     assert "BTCUSDT" in engine.active_window.candidates
 
-    # 1st 1m candle closes at t15 + 60,000ms: Bullish
     ha_1m = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
-    event_1m = make_candle_close_event(ha_1m)
-
-    signal = await engine.on_1m_candle_closed(event_1m, ha_1m)
+    signal = await confirm_and_flush(engine, ha_1m)
 
     assert signal is not None
     assert signal.symbol == "BTCUSDT"
@@ -157,14 +169,14 @@ class TestMultiSymbolStrategyEngine:
     for i in range(4):
       bar_open = t15 + (i * 60000)
       ha_bear = make_ha_candle("BTCUSDT", "BEARISH", "1m", open_time=bar_open)
-      sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_bear), ha_bear)
+      sig = await confirm_and_flush(engine, ha_bear)
       assert sig is None
       assert engine.active_window.is_slot_claimed is False
 
     # Bar 5: Bullish confirmation
     bar_5_open = t15 + (4 * 60000)
     ha_bull = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=bar_5_open)
-    sig5 = await engine.on_1m_candle_closed(make_candle_close_event(ha_bull), ha_bull)
+    sig5 = await confirm_and_flush(engine, ha_bull)
 
     assert sig5 is not None
     assert sig5.symbol == "BTCUSDT"
@@ -177,20 +189,17 @@ class TestMultiSymbolStrategyEngine:
     t15 = 1700000000000
 
     snapshot = [make_scanned_symbol("SOLUSDT", rank=2)]
-    # 15m SHORT trigger
     ha_15m = {"SOLUSDT": make_ha_candle("SOLUSDT", "BEARISH", "15m", open_time=t15 - 900000)}
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # 3 Bullish (opposite) candles
     for i in range(3):
       ha_opp = make_ha_candle("SOLUSDT", "BULLISH", "1m", open_time=t15 + (i * 60000))
-      sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_opp), ha_opp)
+      sig = await confirm_and_flush(engine, ha_opp)
       assert sig is None
       assert engine.active_window.candidates["SOLUSDT"].status == CandidateStatus.MONITORING
 
-    # 4th candle: Bearish (aligned)
     ha_aligned = make_ha_candle("SOLUSDT", "BEARISH", "1m", open_time=t15 + (3 * 60000))
-    sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_aligned), ha_aligned)
+    sig = await confirm_and_flush(engine, ha_aligned)
 
     assert sig is not None
     assert sig.symbol == "SOLUSDT"
@@ -206,15 +215,13 @@ class TestMultiSymbolStrategyEngine:
     ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m", open_time=t15 - 900000)}
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # 2 Doji candles
     for i in range(2):
       ha_doji = make_ha_candle("BTCUSDT", "DOJI", "1m", open_time=t15 + (i * 60000))
-      sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_doji), ha_doji)
+      sig = await confirm_and_flush(engine, ha_doji)
       assert sig is None
 
-    # 3rd candle: Bullish
     ha_bull = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15 + (2 * 60000))
-    sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_bull), ha_bull)
+    sig = await confirm_and_flush(engine, ha_bull)
     assert sig is not None
     assert sig.symbol == "BTCUSDT"
 
@@ -261,18 +268,20 @@ class TestMultiSymbolStrategyEngine:
     # Bar 1 (t15): ETH confirms (Bullish), BTC misaligned (Bearish)
     ha_eth_1 = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15)
     ha_btc_1 = make_ha_candle("BTCUSDT", "BEARISH", "1m", open_time=t15)
+    t1_close = ha_eth_1.close_time  # same close_time for both bar-1 candles
 
-    sig_eth = await engine.on_1m_candle_closed(make_candle_close_event(ha_eth_1), ha_eth_1)
-    sig_btc = await engine.on_1m_candle_closed(make_candle_close_event(ha_btc_1), ha_btc_1)
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_eth_1), ha_eth_1)
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_btc_1), ha_btc_1)
+    sig_bar1 = await engine.flush_1m_timestamp_batch(t1_close)
 
-    assert sig_eth is not None
-    assert sig_eth.symbol == "ETHUSDT"
-    assert sig_btc is None
+    # ETH aligned, BTC misaligned -> only ETH in batch -> ETH wins
+    assert sig_bar1 is not None
+    assert sig_bar1.symbol == "ETHUSDT"
     assert engine.active_window.winning_symbol == "ETHUSDT"
 
-    # Bar 2: BTC now confirms (Bullish). Must be IGNORED because slot already claimed by ETH!
+    # Bar 2: BTC now confirms (Bullish). Must be IGNORED — slot already claimed by ETH.
     ha_btc_2 = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15 + 60000)
-    sig_btc_late = await engine.on_1m_candle_closed(make_candle_close_event(ha_btc_2), ha_btc_2)
+    sig_btc_late = await confirm_and_flush(engine, ha_btc_2)
     assert sig_btc_late is None
 
   @pytest.mark.asyncio
@@ -291,17 +300,23 @@ class TestMultiSymbolStrategyEngine:
     }
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # Bar 1: BTC confirms, ETH is doji
+    # Bar 1: BTC confirms, ETH is doji — BTC confirmed at bar 1, ETH not.
     ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
     ha_eth = make_ha_candle("ETHUSDT", "DOJI", "1m", open_time=t15)
+    t_close = ha_btc.close_time
 
-    sig_btc = await engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
-    sig_eth = await engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth)
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth)
+    sig = await engine.flush_1m_timestamp_batch(t_close)
 
-    assert sig_btc is not None
-    assert sig_btc.symbol == "BTCUSDT"
-    assert sig_eth is None
+    assert sig is not None
+    assert sig.symbol == "BTCUSDT"
     assert engine.active_window.winning_symbol == "BTCUSDT"
+
+    # Bar 2: ETH confirms — slot already taken.
+    ha_eth_2 = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15 + 60000)
+    sig2 = await confirm_and_flush(engine, ha_eth_2)
+    assert sig2 is None
 
   @pytest.mark.asyncio
   async def test_08_two_symbols_confirm_on_same_1m_timestamp(self):
@@ -320,17 +335,15 @@ class TestMultiSymbolStrategyEngine:
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
     # Both confirm on the exact same 1m close timestamp
-    t_close = t15 + 59999
-    cand_btc = engine.active_window.candidates["BTCUSDT"]
-    cand_eth = engine.active_window.candidates["ETHUSDT"]
-    cand_btc.confirmation_candle = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
-    cand_btc.confirmed_at = t_close
-    cand_eth.confirmation_candle = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15)
-    cand_eth.confirmed_at = t_close
+    ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
+    ha_eth = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15)
+    t_close = ha_btc.close_time  # == ha_eth.close_time
 
-    signal = await engine.process_simultaneous_confirmations([cand_eth, cand_btc])
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth)
+    signal = await engine.flush_1m_timestamp_batch(t_close)
 
-    # BTC has rank 1 vs ETH rank 2 -> BTC must win
+    # BTC has rank 1 vs ETH rank 2 -> BTC must win deterministically
     assert signal is not None
     assert signal.symbol == "BTCUSDT"
     assert engine.active_window.winning_symbol == "BTCUSDT"
@@ -370,13 +383,10 @@ class TestMultiSymbolStrategyEngine:
     ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m")}
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # Simulated: Scanner refreshes and BTC is no longer in top 20
-    # Candidate must still be monitored in active window
     assert "BTCUSDT" in engine.active_window.candidates
 
-    # Bar arrives: Bullish -> Qualifies!
     ha_1m = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15 + 120000)
-    sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_1m), ha_1m)
+    sig = await confirm_and_flush(engine, ha_1m)
 
     assert sig is not None
     assert sig.symbol == "BTCUSDT"
@@ -387,16 +397,14 @@ class TestMultiSymbolStrategyEngine:
     engine = MultiSymbolStrategyEngine()
     t15 = 1700000000000
 
-    # Window created with only BTCUSDT
     snapshot = [make_scanned_symbol("BTCUSDT", rank=1)]
     ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m")}
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # New symbol "DOGEUSDT" emits a 1m candle
+    # New symbol "DOGEUSDT" emits a 1m candle — not in the original snapshot
     ha_doge = make_ha_candle("DOGEUSDT", "BULLISH", "1m", open_time=t15 + 60000)
-    sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_doge), ha_doge)
+    sig = await confirm_and_flush(engine, ha_doge)
 
-    # Ignored because DOGE was not in the 15m trigger snapshot
     assert sig is None
 
   @pytest.mark.asyncio
@@ -409,7 +417,6 @@ class TestMultiSymbolStrategyEngine:
     ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m")}
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # Next 15m candle close (expiration of window)
     t_next_15 = t15 + 900000
     await engine.expire_active_window(t_next_15)
 
@@ -430,7 +437,7 @@ class TestMultiSymbolStrategyEngine:
     # Candle closing at or after t15 + 900000 (end of window)
     late_open = t15 + 900000
     ha_late = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=late_open)
-    sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_late), ha_late)
+    sig = await confirm_and_flush(engine, ha_late)
 
     assert sig is None
     assert engine.active_window.status == WindowStatus.EXPIRED
@@ -453,16 +460,21 @@ class TestMultiSymbolStrategyEngine:
 
     ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
     ha_eth = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15)
+    t_close = ha_btc.close_time  # same close_time for both
 
-    # Launch two concurrent workers
-    t1 = asyncio.create_task(engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc))
-    t2 = asyncio.create_task(engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth))
+    # Launch two concurrent on_1m_candle_closed tasks simultaneously
+    t1 = asyncio.create_task(
+        engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
+    )
+    t2 = asyncio.create_task(
+        engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth)
+    )
+    await asyncio.gather(t1, t2)
 
-    results = await asyncio.gather(t1, t2)
-    valid_signals = [r for r in results if r is not None]
-
-    # Exactly ONE signal produced
-    assert len(valid_signals) == 1
+    # Flush the batch — exactly ONE signal produced, winner is deterministic (rank 1 = BTC)
+    signal = await engine.flush_1m_timestamp_batch(t_close)
+    assert signal is not None
+    assert signal.symbol == "BTCUSDT"  # rank 1 wins deterministically
     assert engine.active_window.is_slot_claimed is True
 
   @pytest.mark.asyncio
@@ -483,10 +495,10 @@ class TestMultiSymbolStrategyEngine:
 
     # BTC confirms first
     ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
-    sig_btc = await engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
+    sig_btc = await confirm_and_flush(engine, ha_btc)
     assert sig_btc is not None
 
-    # Simulate Risk Validation Failure (e.g. stop distance too wide or margin exceeded)
+    # Simulate Risk Validation Failure
     engine.handle_risk_validation_failure(
         window_id=sig_btc.window_id,
         symbol="BTCUSDT",
@@ -494,16 +506,16 @@ class TestMultiSymbolStrategyEngine:
     )
 
     assert engine.active_window.window_consumed is True
+    assert engine.active_window.status == WindowStatus.EXPIRED
 
-    # Next minute: ETH confirms. Must be REJECTED! No second candidate allowed in consumed window.
+    # Next minute: ETH confirms. Must be REJECTED — window is consumed.
     ha_eth = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15 + 60000)
-    sig_eth = await engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth)
+    sig_eth = await confirm_and_flush(engine, ha_eth)
     assert sig_eth is None
 
   @pytest.mark.asyncio
   async def test_16_existing_position_prevents_new_entry(self):
     """Scenario 16: Account position is open; new 1m confirmation does not claim slot or emit signal."""
-    # Callback indicates position is open
     engine = MultiSymbolStrategyEngine(has_open_position_callback=lambda: True)
     t15 = 1700000000000
 
@@ -512,9 +524,8 @@ class TestMultiSymbolStrategyEngine:
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
     ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
-    sig = await engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
+    sig = await confirm_and_flush(engine, ha_btc)
 
-    # Blocked by account position lock
     assert sig is None
     assert engine.active_window.is_slot_claimed is False
 
@@ -529,17 +540,15 @@ class TestMultiSymbolStrategyEngine:
         make_scanned_symbol("ETHUSDT", rank=2),
     ]
     ha_15m = {
-        "BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m"),
-        "ETHUSDT": make_ha_candle("ETHUSDT", "BEARISH", "15m"),
+        "BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m", open_time=t15 - 900000),
+        "ETHUSDT": make_ha_candle("ETHUSDT", "BEARISH", "15m", open_time=t15 - 900000),
     }
     await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
 
-    # Serialize active state
     saved_state = engine.serialize_state()
     assert saved_state["window_id"] == f"WIN_{t15}"
     assert len(saved_state["candidates"]) == 2
 
-    # Initialize fresh engine instance simulating process restart
     fresh_engine = MultiSymbolStrategyEngine()
     assert fresh_engine.active_window is None
 
@@ -552,8 +561,139 @@ class TestMultiSymbolStrategyEngine:
 
     # Resume monitoring in restored engine: BTC confirms
     ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15 + 60000)
-    sig = await fresh_engine.on_1m_candle_closed(make_candle_close_event(ha_btc), ha_btc)
+    sig = await confirm_and_flush(fresh_engine, ha_btc)
 
     assert sig is not None
     assert sig.symbol == "BTCUSDT"
     assert fresh_engine.active_window.is_slot_claimed is True
+
+  @pytest.mark.asyncio
+  async def test_18_flush_deterministic_tie_breaking_by_rank(self):
+    """Scenario 18: flush_1m_timestamp_batch deterministically resolves simultaneous confirmations by rank."""
+    engine = MultiSymbolStrategyEngine()
+    t15 = 1700000000000
+
+    # ETH rank=2 vs SOL rank=5 — ETH wins
+    snapshot = [
+        make_scanned_symbol("ETHUSDT", rank=2),
+        make_scanned_symbol("SOLUSDT", rank=5),
+    ]
+    ha_15m = {
+        "ETHUSDT": make_ha_candle("ETHUSDT", "BULLISH", "15m"),
+        "SOLUSDT": make_ha_candle("SOLUSDT", "BULLISH", "15m"),
+    }
+    await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
+
+    ha_eth = make_ha_candle("ETHUSDT", "BULLISH", "1m", open_time=t15)
+    ha_sol = make_ha_candle("SOLUSDT", "BULLISH", "1m", open_time=t15)
+    t_close = ha_eth.close_time
+
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_eth), ha_eth)
+    await engine.on_1m_candle_closed(make_candle_close_event(ha_sol), ha_sol)
+    signal = await engine.flush_1m_timestamp_batch(t_close)
+
+    # ETH (rank 2) beats SOL (rank 5)
+    assert signal is not None
+    assert signal.symbol == "ETHUSDT"
+    assert signal.candidate_rank == 2
+
+  @pytest.mark.asyncio
+  async def test_19_flush_after_slot_claimed_returns_none(self):
+    """Scenario 19: flush_1m_timestamp_batch returns None when slot is already claimed."""
+    engine = MultiSymbolStrategyEngine()
+    t15 = 1700000000000
+
+    snapshot = [make_scanned_symbol("BTCUSDT", rank=1)]
+    ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m")}
+    await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
+
+    # First bar: BTC confirms and wins
+    ha_1m = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
+    sig1 = await confirm_and_flush(engine, ha_1m)
+    assert sig1 is not None
+    assert engine.active_window.is_slot_claimed is True
+
+    # Duplicate flush for same timestamp — must return None
+    sig2 = await engine.flush_1m_timestamp_batch(ha_1m.close_time)
+    assert sig2 is None
+
+  @pytest.mark.asyncio
+  async def test_20_risk_failure_expires_monitoring_candidates(self):
+    """Scenario 20: handle_risk_validation_failure marks all MONITORING candidates as EXPIRED."""
+    engine = MultiSymbolStrategyEngine()
+    t15 = 1700000000000
+
+    snapshot = [
+        make_scanned_symbol("BTCUSDT", rank=1),
+        make_scanned_symbol("ETHUSDT", rank=2),
+    ]
+    ha_15m = {
+        "BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m"),
+        "ETHUSDT": make_ha_candle("ETHUSDT", "BULLISH", "15m"),
+    }
+    await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
+
+    # BTC wins
+    ha_btc = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
+    sig = await confirm_and_flush(engine, ha_btc)
+    assert sig is not None
+
+    # Risk failure on window
+    engine.handle_risk_validation_failure(
+        window_id=sig.window_id, symbol="BTCUSDT", reason="Margin insufficient"
+    )
+
+    # Window EXPIRED after risk failure
+    assert engine.active_window.status == WindowStatus.EXPIRED
+    # ETH was CANCELLED by the arbitrator when BTC won the slot; risk failure
+    # does not change already-terminal states.
+    assert engine.active_window.candidates["ETHUSDT"].status == CandidateStatus.CANCELLED
+
+  @pytest.mark.asyncio
+  async def test_21_serialize_preserves_actual_trigger_candle_timestamps(self):
+    """Scenario 21: serialize_state stores actual trigger candle open/close times; restore_state recovers them."""
+    engine = MultiSymbolStrategyEngine()
+    t15 = 1700000000000
+    trigger_open = t15 - 900000
+    trigger_close = t15 - 1
+
+    snapshot = [make_scanned_symbol("BTCUSDT", rank=1)]
+    ha_15m = {
+        "BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m", open_time=trigger_open)
+    }
+    await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
+
+    state = engine.serialize_state()
+    cand_state = state["candidates"]["BTCUSDT"]
+    assert cand_state["trigger_open_time"] == trigger_open
+    assert cand_state["trigger_close_time"] == trigger_close
+
+    fresh = MultiSymbolStrategyEngine()
+    fresh.restore_state(state)
+    restored_cand = fresh.active_window.candidates["BTCUSDT"]
+    assert restored_cand.trigger_15m_candle.open_time == trigger_open
+    assert restored_cand.trigger_15m_candle.close_time == trigger_close
+
+  @pytest.mark.asyncio
+  async def test_22_on_1m_buffers_candidate_then_flush_emits_signal(self):
+    """Scenario 22: on_1m_candle_closed returns None always; flush_1m_timestamp_batch emits signal."""
+    engine = MultiSymbolStrategyEngine()
+    t15 = 1700000000000
+
+    snapshot = [make_scanned_symbol("BTCUSDT", rank=1)]
+    ha_15m = {"BTCUSDT": make_ha_candle("BTCUSDT", "BULLISH", "15m")}
+    await engine.on_15m_candle_closed(snapshot, ha_15m, timestamp_ms=t15)
+
+    ha_1m = make_ha_candle("BTCUSDT", "BULLISH", "1m", open_time=t15)
+    event = make_candle_close_event(ha_1m)
+
+    # on_1m_candle_closed must return None (buffers only)
+    result = await engine.on_1m_candle_closed(event, ha_1m)
+    assert result is None
+    assert engine.active_window.is_slot_claimed is False  # not yet claimed
+
+    # Flush produces the signal
+    signal = await engine.flush_1m_timestamp_batch(ha_1m.close_time)
+    assert signal is not None
+    assert signal.symbol == "BTCUSDT"
+    assert engine.active_window.is_slot_claimed is True
