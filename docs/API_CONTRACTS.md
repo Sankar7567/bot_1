@@ -39,12 +39,22 @@ All requests target the Binance USDⓈ-M Futures Testnet:
 | `DELETE`| `/fapi/v1/order` | Cancel active protective order (`clientOrderId` or `orderId`). | 1 |
 | `GET` | `/fapi/v1/openOrders` | Query all currently open orders (for crash recovery reconciliation). | 1 or 40 |
 
-### 1.4 WebSocket Streams
-| Stream Name | Format | Description |
-|---|---|---|
-| **Aggregate Ticker** | `!ticker@arr` | 24h rolling statistics for real-time market universe evaluation. |
-| **Kline Stream** | `<symbol>@kline_<interval>` | Continuous 1m and 15m candle updates (`k.x == true` for closed). |
-| **User Data Stream** | `POST /fapi/v1/listenKey` | Execution reports (`ORDER_TRADE_UPDATE`), balance updates (`ACCOUNT_UPDATE`). |
+### 1.5 Implemented Connector Client Interface (`src/exchange/client.py`)
+
+The `BinanceFuturesClient` provides the following verified methods:
+- `ping() -> bool`: Basic connectivity test (`GET /fapi/v1/ping`).
+- `get_server_time() -> ServerTimeResponse`: Retrieves exchange time and computes clock drift offset (`GET /fapi/v1/time`).
+- `get_exchange_info() -> Dict[str, SymbolInfo]`: Retrieves active contracts and parses trading filters (`GET /fapi/v1/exchangeInfo`).
+- `get_symbol_filters(symbol: str) -> SymbolFilter`: Retrieves parsed tick size, step size, minQty, and minNotional.
+- `get_account_info() -> AccountInfo`: Signed query of margin equity, wallet balance, and trade permissions (`GET /fapi/v2/account`).
+- `get_balances() -> List[AssetBalance]`: Signed query of asset-level balances (`GET /fapi/v2/balance`).
+- `get_positions(symbol: Optional[str] = None) -> List[PositionRisk]`: Real-time position risk, leverage, and liquidation prices (`GET /fapi/v2/positionRisk`).
+- `get_open_orders(symbol: Optional[str] = None) -> List[OpenOrder]`: Active open order inspection (`GET /fapi/v1/openOrders`).
+- `get_leverage_brackets(symbol: Optional[str] = None) -> Dict[str, SymbolLeverageBrackets]`: Leverage bracket and notional tier limits (`GET /fapi/v1/leverageBracket`).
+- `get_position_mode() -> Dict[str, Any]`: Checks if position mode is One-Way (`GET /fapi/v1/positionSide/dual`).
+- `set_position_mode(dual_side: bool = False) -> Dict[str, Any]`: Configures account to One-Way mode (`POST /fapi/v1/positionSide/dual`).
+- `change_margin_type(symbol: str, margin_type: str = "ISOLATED") -> Dict[str, Any]`: Sets isolated margin mode (`POST /fapi/v1/marginType`).
+- `change_leverage(symbol: str, leverage: int) -> Dict[str, Any]`: Sets maximum eligible leverage (`POST /fapi/v1/leverage`).
 
 ---
 
@@ -124,6 +134,31 @@ class SwingPivot:
   confirmation_timestamp: int  # Time when bar_index + 5 closed
   price: float
   pivot_type: PivotType
+
+
+@dataclass(frozen=True)
+class CandidateState:
+  """State of a candidate symbol within an active confirmation window."""
+
+  symbol: str
+  direction: Direction
+  initial_rank: int
+  registered_at: int
+  confirmed: bool = False
+  confirmation_timestamp: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class ConfirmationWindow:
+  """15-minute global confirmation window tracking candidates."""
+
+  window_id: str
+  start_timestamp: int  # 15m candle close / window open
+  end_timestamp: int  # Next 15m candle close / window expiration
+  candidates: dict[str, CandidateState]
+  is_slot_claimed: bool = False
+  winning_symbol: Optional[str] = None
+  is_expired: bool = False
 
 
 @dataclass(frozen=True)

@@ -5,6 +5,16 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-23
+### Changed
+- Strategy Amendment v1.1: Replaced single-shot 1st 1m candle confirmation with a global 15-minute multi-symbol confirmation window.
+- Updated `PROJECT_SPEC.md`, `ARCHITECTURE.md`, `STRATEGY_RULES.md`, `API_CONTRACTS.md`, and `TEST_PLAN.md` with:
+  - Fixed candidate snapshot ranking per 15m window.
+  - Concurrent multi-candle 1m monitoring.
+  - Global first-trigger-wins arbitration.
+  - Deterministic tie-breaking for simultaneous confirmations on identical 1m timestamps.
+  - Window consumption upon winner risk validation failure (no second picks).
+
 ## [0.1.0] - 2026-11-23
 ### Added
 - Phase 01: Project Foundation and Architectural Design.

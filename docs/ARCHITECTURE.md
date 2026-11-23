@@ -30,7 +30,8 @@ flowchart TD
     end
 
     subgraph DecisionLayer ["Strategy & Risk Layer"]
-        SE["Multi-Timeframe Strategy Engine<br>(15m Trigger + 1m Confirmation)"]
+        SE["Multi-Symbol Strategy Engine<br>(15m Window + Concurrent 1m Confirmation)"]
+        ARB["Global First-Trigger-Wins Arbitrator<br>(Deterministic Top-20 Rank Tie-Breaker)"]
         RME["Risk Management Engine<br>(10% Equity, 3R Target, Sizing)"]
     end
 
@@ -174,12 +175,14 @@ src/
   - A pivot at bar $i$ is only emitted after bar $i+5$ has closed.
   - Calculates stop price with configurable percentage buffer.
 
-### 3.7 Strategy Engine (`src/strategy/`)
-- **Responsibilities:**
-  - State machine tracking 15m directional triggers across eligible symbols.
-  - When a 15m trigger is set, monitors exclusively for the first subsequent closed 1m candle.
-  - Matches 1m direction to 15m bias; discards on opposite, doji, or timeout.
-  - Emits structured `TradeSignal` containing symbol, direction, timestamps, and swing reference.
+### 3.7 Strategy Engine & Arbitrator (`src/strategy/`)
+- **Responsibilities (Amendment v1.1):**
+  - Manages the global 15-minute confirmation window across registered candidates from the top-20 snapshot.
+  - Concurrently monitors 1m closed HA candles for all registered candidates throughout the entire 15m window.
+  - Implements atomic global first-trigger-wins arbitration.
+  - Resolves simultaneous confirmations deterministically using the original top-20 snapshot ranking and alphabetical symbol tie-breaking.
+  - Cancels remaining candidate watchers immediately upon winner selection.
+  - Enforces the strict rule that if the winner fails risk validation, no secondary candidate from that window may be chosen.
 
 ### 3.8 Risk Management Engine (`src/risk/`)
 - **Responsibilities:**

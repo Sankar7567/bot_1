@@ -6,36 +6,40 @@
 
 ---
 
-## 1. Strategy Overview
+## 1. Strategy Overview (Amendment v1.1)
 
 The strategy combines multi-timeframe directional trend identification using synthetic Heikin-Ashi candles with market-structure stop-loss placement derived from actual price swing pivots. It trades high-momentum instruments selected dynamically from the top 24-hour gainers on Binance USDⓈ-M Futures.
 
+Under **Strategy Amendment v1.1**, the system operates a **global multi-symbol confirmation window** spanning the duration of each 15-minute candle. At each newly closed 15m candle, all qualifying candidates from the top-20 snapshot are registered and monitored concurrently across all subsequent 1m closed candles. The first candidate to confirm globally claims the single execution slot.
+
 ```mermaid
 flowchart TD
-    A["Scan Top 20 24h USDT Perpetuals"] --> B["Detect Closed 15m HA Candle"]
-    B -->|Bullish HA Close > Open| C["Set LONG Bias (15m Trigger)"]
-    B -->|Bearish HA Close < Open| D["Set SHORT Bias (15m Trigger)"]
-    B -->|Doji Close == Open| E["Discard / No Trigger"]
+    A["Close of 15m Candle (T_15)"] --> B["Snapshot Top 20 24h USDT Perpetuals"]
+    B --> C["Evaluate 15m Closed HA for all 20 Symbols"]
+    C --> D["Register Candidates in Shared Confirmation Window [T_15, T_15+15m]"]
     
-    C --> F["Wait for 1st Subsequent 1m Closed HA Candle"]
-    D --> G["Wait for 1st Subsequent 1m Closed HA Candle"]
+    D --> E["Concurrently Monitor Candidates on every 1m Closed HA Candle"]
+    E -->|Candidate 1m HA Matches 15m Direction| F["Candidate Qualifies"]
+    E -->|Candidate 1m HA Disagrees or Doji| G["Continue Monitoring in Window"]
     
-    F -->|1m Bullish| H["Qualify LONG Signal"]
-    F -->|1m Bearish or Doji| I["Discard Trigger Immediately"]
+    F --> H{"Global Execution Slot Claimed?"}
+    H -->|Already Claimed| I["Ignore Subsequent Confirmation"]
+    H -->|First Global Confirmation| J["Claim Global Slot & Cancel Other Watchers"]
     
-    G -->|1m Bearish| J["Qualify SHORT Signal"]
-    G -->|1m Bullish or Doji| I
+    J --> K{"Simultaneous Confirmations on same 1m?"}
+    K -->|Yes| L["Select Winner via Original Top-20 Rank (Tie-Breaker: Symbol ASC)"]
+    K -->|No| M["Winner Selected"]
     
-    H --> K["Find Latest Confirmed 1m Swing Low (5L/5R Actual OHLC)"]
-    J --> L["Find Latest Confirmed 1m Swing High (5L/5R Actual OHLC)"]
+    L --> N["Find Latest Confirmed 1m Swing Pivot (5L/5R Actual OHLC)"]
+    M --> N
     
-    K -->|Found| M["Calculate Risk Budget, SL, TP (3R) & Qty"]
-    K -->|Not Found / Invalid| N["Reject Trade"]
-    L -->|Found| M
-    L -->|Not Found / Invalid| N
+    N -->|Found| O["Handoff to Risk Validation Engine"]
+    N -->|Not Found| P["Reject Trade (Window Consumed)"]
     
-    M -->|Passed All Filters| O["Acquire Account Lock & Execute Market Order"]
-    M -->|Violates Constraints| N
+    O -->|Passes Risk & Leverage & Filters| Q["Acquire Position Lock & Execute Market Order"]
+    O -->|Fails Risk / Margin / Limits| R["Reject Trade (Window Consumed, No 2nd Pick)"]
+    
+    E -->|15m Window Boundary Reached| S["Expire Unconfirmed Candidates & Start New Window"]
 ```
 
 ---
@@ -95,24 +99,52 @@ With floating-point epsilon $\epsilon = 10^{-8}$:
 
 ---
 
-## 4. Multi-Timeframe Trigger & Confirmation Workflow
+## 4. Multi-Timeframe Trigger & Confirmation Workflow (Amendment v1.1)
 
-### 4.1 15-Minute Directional Trigger
-- Evaluated when a 15m candle closes (e.g. 10:15:00, 10:30:00, 10:45:00 UTC).
-- **Bullish 15m HA:** Generates a `LONG` bias trigger for the symbol.
-- **Bearish 15m HA:** Generates a `SHORT` bias trigger for the symbol.
-- **Doji 15m HA:** Generates no trigger. Any existing trigger for the symbol is cleared.
-- **Validity Window:** The trigger remains active until the end of that 15m period (i.e. strictly up to the close of the next 15m candle).
+### 4.1 15-Minute Directional Trigger Window Creation
+- Evaluated when a 15m candle closes (e.g. 5:00 PM, 5:15 PM UTC):
+  1. Take a snapshot of the current top 20 eligible USDT perpetual gainers.
+  2. For every symbol, evaluate its newly closed 15m HA candle.
+  3. Register all symbols with directional bias:
+     - **Bullish 15m HA ($HA\_Close > HA\_Open$):** Candidate for `LONG`.
+     - **Bearish 15m HA ($HA\_Close < HA\_Open$):** Candidate for `SHORT`.
+     - **Doji ($|HA\_Close - HA\_Open| \le 10^{-8}$):** Ignored.
+  4. Create one shared global confirmation window spanning from $T_{15}$ to $T_{15} + 15\text{ minutes}$.
+  5. The candidate list and their snapshot rankings remain frozen for this window.
 
-### 4.2 1-Minute Single-Shot Confirmation
-- Once a 15m trigger is established at $T_{15}$, the strategy waits for the **first subsequent newly closed 1m candle** $T_{1m\_first}$ (e.g., if 15m candle closes at 10:15:00, the first 1m candle closes at 10:16:00).
-- **Long Confirmation:**
-  - If $HA\_Close_{1m} > HA\_Open_{1m}$: The signal **qualifies**.
-  - If $HA\_Close_{1m} \le HA\_Open_{1m}$ (Bearish or Doji): The trigger is **discarded immediately**.
-- **Short Confirmation:**
-  - If $HA\_Close_{1m} < HA\_Open_{1m}$: The signal **qualifies**.
-  - If $HA\_Close_{1m} \ge HA\_Open_{1m}$ (Bullish or Doji): The trigger is **discarded immediately**.
-- **Strict Single-Shot Rule:** The engine **never** waits for candle 2, 3, etc. If the first 1m candle does not confirm, the trigger is dead.
+### 4.2 Concurrent Multi-Candle 1m Confirmation
+- All registered candidates are monitored concurrently for every newly closed 1m candle during the active 15m window.
+- **Candidate Alignment:**
+  - A candidate qualifies when its newly closed 1m HA candle matches its registered 15m bias (Bullish for Long, Bearish for Short).
+  - If a 1m candle is opposite or doji, the candidate is **NOT** discarded; monitoring continues on subsequent 1m candles.
+  - A candidate can qualify only once per 15m window.
+
+### 4.3 Global First-Trigger-Wins Arbitration
+- Exactly **one** candidate across all monitored symbols can claim the global entry slot during the window.
+- The first candidate to produce a valid 1m directional confirmation claims the slot.
+- Once claimed:
+  1. All other candidate monitoring tasks are safely cancelled.
+  2. Exactly one trade signal is emitted.
+  3. Subsequent confirmations within the same window are ignored.
+
+### 4.4 Deterministic Simultaneous Confirmation Tie-Breaking
+- If multiple candidates confirm on the **exact same 1m candle close timestamp**:
+  1. The candidate with the highest ranking from the original top-20 snapshot taken at the beginning of the window wins.
+  2. In case of identical ranking, secondary tie-breaker is lexicographical symbol name ascending (e.g. `BTCUSDT` before `ETHUSDT`).
+  3. Asynchronous execution order never determines the winner.
+
+### 4.5 Post-Confirmation Risk Validation & Single Window Attempt
+- The winning candidate is submitted to the Risk Management Engine for complete validation.
+- If the winning candidate fails risk validation (e.g. stop distance too small/large, insufficient margin, invalid swing, liquidation price clash):
+  - The trade is rejected and logged.
+  - **No second candidate from the same window may be chosen.**
+  - The window is considered consumed.
+
+### 4.6 Window Expiration
+- At the close of the next 15m candle:
+  - All unconfirmed candidates and active watchers from the expired window are cancelled.
+  - Late-arriving events for the expired window are rejected.
+  - A fresh top-20 snapshot is taken, and a new confirmation window begins.
 
 ---
 

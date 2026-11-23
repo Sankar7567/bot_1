@@ -62,12 +62,19 @@ To protect capital and guarantee algorithmic correctness, the system adheres to 
 - Bullish, bearish, and doji classification.
 - Absence of look-ahead bias across sliding windows.
 
-### P06 — Multi-Timeframe Strategy Engine
-- 15m trigger generation on closed candle.
-- 1st 1m confirmation matching directional bias.
-- Immediate trigger discard on opposite or doji 1m candle.
-- Single-shot confirmation enforcement (ignoring subsequent 1m candles).
-- Trigger expiration at the 15m candle boundary.
+### P06 — Multi-Symbol Strategy Engine (Amendment v1.1)
+- Trigger window creation at 15m closed candle with candidate snapshot ranking.
+- Concurrent candidate monitoring across multiple 1m closed candles.
+- Confirmation on immediate 1m vs 5th 1m candle.
+- Tolerance of misaligned and doji candles before alignment.
+- Global first-trigger-wins slot acquisition.
+- Deterministic resolution of simultaneous confirmations (same 1m close) using snapshot rank and symbol ordering.
+- Cancellation of remaining candidate watchers upon winner claim.
+- Handling of symbols entering/leaving refreshed top-20 during the window.
+- Window expiration at next 15m close; rejection of late-arriving candles.
+- Strict one-trade-per-window rule (winner risk failure consumes the window, no 2nd candidate).
+- Account position lock integration (no new entry if position is open).
+- Recovery of active confirmation window and candidate states across process restarts.
 
 ### P07 — Swing Detection Engine
 - 5-left / 5-right pivot low / high verification on actual OHLC data.

@@ -29,7 +29,7 @@ The system operates under a strict **Testnet-First** rule: no real-money trading
 8. **Refresh Frequency:** Universe is rescanned and updated every 60 seconds.
 9. **Universe Integrity:** Stale or incomplete scan data must never produce an invalid universe; previous valid universe is retained with an alert, or scanning halts safely if data is corrupted.
 
-### 2.2 Heikin-Ashi Multi-Timeframe Strategy
+### 2.2 Heikin-Ashi Multi-Timeframe Strategy (Amendment v1.1)
 1. **Timeframes:**
    - **Trigger Timeframe:** 15-minute (15m).
    - **Confirmation Timeframe:** 1-minute (1m).
@@ -38,16 +38,30 @@ The system operates under a strict **Testnet-First** rule: no real-money trading
    - **Bullish:** $HA\_Close > HA\_Open$.
    - **Bearish:** $HA\_Close < HA\_Open$.
    - **Doji / Neutral:** $HA\_Close == HA\_Open$ (within floating point epsilon $10^{-8}$).
-4. **15m Trigger:**
-   - Bullish 15m closed HA candle establishes a **LONG** bias.
-   - Bearish 15m closed HA candle establishes a **SHORT** bias.
-   - Doji 15m candle generates NO trigger.
-5. **1m Confirmation:**
-   - Upon a new 15m trigger, the engine waits exclusively for the **first subsequent newly closed 1m HA candle**.
-   - If the first 1m HA candle matches the 15m bias (Bullish for Long, Bearish for Short), the signal qualifies.
-   - If the first 1m HA candle is opposite direction, doji, or missing, the signal is discarded immediately.
-   - The engine does NOT wait for subsequent 1m candles. A single 15m trigger provides exactly one 1m confirmation opportunity.
-   - Trigger expires at the end of the 15m candle's validity window.
+4. **15m Trigger Window Creation:**
+   - At every newly closed 15m candle (e.g. 5:00 PM, 5:15 PM UTC):
+     - Take a snapshot of the current top 20 eligible USDT perpetual gainers.
+     - Evaluate the newly closed 15m HA candle for all 20 symbols.
+     - Register every symbol with a bullish (LONG) or bearish (SHORT) directional trigger as an active candidate in one shared confirmation window.
+     - The candidate universe is frozen for that 15m window even if the scanner refreshes its top-20 ranking.
+     - Only one active confirmation window exists globally at any time.
+5. **Multi-Candle Concurrent 1m Confirmation:**
+   - All registered candidates are monitored concurrently throughout the entire 15m window (e.g. 5:00 PM to 5:15 PM UTC).
+   - At each newly closed 1m HA candle for a candidate:
+     - If the 1m direction agrees with its 15m bias (Bullish for Long, Bearish for Short), the candidate **qualifies**.
+     - If the 1m direction disagrees or is a doji, the candidate remains active and continues to be monitored on subsequent 1m closed candles.
+     - A candidate can qualify only once per 15m window.
+6. **Global First-Trigger-Wins Arbitration:**
+   - The system maintains a global entry arbitration lock.
+   - The first candidate to produce a valid 1m directional confirmation wins the global entry slot.
+   - Once a winner claims the slot, all other candidate watchers are cancelled immediately.
+   - **Simultaneous Confirmations:** If multiple candidates qualify on the exact same 1m candle close timestamp, the winner is determined by their original ranking from the top-20 snapshot taken at the start of the window (with deterministic alphabetical symbol ordering as a tie-breaker).
+7. **Risk Validation Handoff:**
+   - The winning candidate is passed to the risk management engine for validation (swing stop, stop distance, 3R target, quantity, equity, isolated margin, leverage brackets, exchange filters).
+   - **Strict Window Consumption:** If the winning candidate fails risk validation, the trade is rejected, and **no secondary candidate from the same window may be selected**. Exactly one trade attempt per confirmation window.
+8. **Window Expiration:**
+   - At the close of the next 15m candle, all remaining unconfirmed candidate watchers are cancelled and expired.
+   - A new top-20 snapshot is taken, new 15m HA triggers are evaluated, and a fresh confirmation window begins. No signals leak across window boundaries.
 
 ### 2.3 Swing Detection Engine
 1. **Source Data:** Actual exchange OHLC market prices (never synthetic Heikin-Ashi values).
