@@ -101,6 +101,28 @@ class SymbolInfo:
 
 
 @dataclass(frozen=True)
+class Ticker24hr:
+  """24-hour rolling ticker price change statistics."""
+
+  symbol: str
+  price_change: float
+  price_change_percent: float
+  weighted_avg_price: float
+  last_price: float
+  last_qty: float
+  open_price: float
+  high_price: float
+  low_price: float
+  volume: float
+  quote_volume: float
+  open_time: int
+  close_time: int
+  first_id: int
+  last_id: int
+  count: int
+
+
+@dataclass(frozen=True)
 class AccountInfo:
   """Futures account summary."""
 

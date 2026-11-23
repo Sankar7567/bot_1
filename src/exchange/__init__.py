@@ -19,6 +19,7 @@ from src.exchange.models import (
     SymbolFilter,
     SymbolInfo,
     SymbolLeverageBrackets,
+    Ticker24hr,
 )
 from src.exchange.rate_limiter import RateLimiter
 from src.exchange.signer import calculate_signature, sign_parameters
@@ -40,6 +41,7 @@ __all__ = [
     "OpenOrder",
     "LeverageBracketTier",
     "SymbolLeverageBrackets",
+    "Ticker24hr",
     "RateLimiter",
     "sign_parameters",
     "calculate_signature",

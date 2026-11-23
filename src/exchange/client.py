@@ -27,6 +27,7 @@ from src.exchange.models import (
     SymbolFilter,
     SymbolInfo,
     SymbolLeverageBrackets,
+    Ticker24hr,
 )
 from src.exchange.rate_limiter import RateLimiter
 from src.exchange.signer import sign_parameters
@@ -282,6 +283,50 @@ class BinanceFuturesClient:
       )
 
     return symbols_map
+
+  async def get_24hr_tickers(
+      self, symbol: Optional[str] = None
+  ) -> List[Ticker24hr]:
+    """Retrieves 24-hour rolling ticker price change statistics for all or a specific symbol."""
+    params = {"symbol": symbol} if symbol else {}
+    weight = 1 if symbol else 40
+    data = await self._request(
+        "GET", "/fapi/v1/ticker/24hr", params=params, weight=weight
+    )
+
+    items = data if isinstance(data, list) else [data]
+    tickers: List[Ticker24hr] = []
+
+    for item in items:
+      try:
+        tickers.append(
+            Ticker24hr(
+                symbol=item.get("symbol", ""),
+                price_change=float(item.get("priceChange", 0.0)),
+                price_change_percent=float(item.get("priceChangePercent", 0.0)),
+                weighted_avg_price=float(item.get("weightedAvgPrice", 0.0)),
+                last_price=float(item.get("lastPrice", 0.0)),
+                last_qty=float(item.get("lastQty", 0.0)),
+                open_price=float(item.get("openPrice", 0.0)),
+                high_price=float(item.get("highPrice", 0.0)),
+                low_price=float(item.get("lowPrice", 0.0)),
+                volume=float(item.get("volume", 0.0)),
+                quote_volume=float(item.get("quoteVolume", 0.0)),
+                open_time=int(item.get("openTime", 0)),
+                close_time=int(item.get("closeTime", 0)),
+                first_id=int(item.get("firstId", 0)),
+                last_id=int(item.get("lastId", 0)),
+                count=int(item.get("count", 0)),
+            )
+        )
+      except (ValueError, TypeError) as parse_err:
+        logger.warning(
+            "Skipping malformed ticker item for %s: %s",
+            item.get("symbol"),
+            parse_err,
+        )
+
+    return tickers
 
   async def get_symbol_filters(self, symbol: str) -> SymbolFilter:
     """Retrieves parsed filters for a specific symbol."""

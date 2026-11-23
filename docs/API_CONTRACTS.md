@@ -39,7 +39,17 @@ All requests target the Binance USDⓈ-M Futures Testnet:
 | `DELETE`| `/fapi/v1/order` | Cancel active protective order (`clientOrderId` or `orderId`). | 1 |
 | `GET` | `/fapi/v1/openOrders` | Query all currently open orders (for crash recovery reconciliation). | 1 or 40 |
 
-### 1.5 Implemented Connector Client Interface (`src/exchange/client.py`)
+### 1.6 Market Scanner Interface (`src/scanner/`)
+
+The `MarketScanner` provides:
+- `scan() -> ScanResult`: Queries `/fapi/v1/exchangeInfo` and `/fapi/v1/ticker/24hr`, applies contract and volume filters, deterministically ranks gainers, and selects the top N symbols.
+- `last_scan -> Optional[ScanResult]`: Accesses the most recent scan snapshot.
+- `start_periodic_scan(interval_sec: int = 60) -> None`: Initiates an asynchronous background scanning loop.
+- `stop_periodic_scan() -> None`: Gracefully cancels the background scanning task.
+
+Data contracts in `src/scanner/models.py`:
+- `ScannedSymbol`: `rank`, `symbol`, `price_change_percent`, `quote_volume`, `last_price`, `base_asset`, `quote_asset`, `contract_type`, `scan_timestamp`.
+- `ScanResult`: `scan_timestamp`, `symbols`, `total_evaluated_count`, `total_eligible_count`, `scan_duration_ms`. Helper methods: `get_symbol_names()`, `get_rank(symbol)`, `is_in_universe(symbol)`.
 
 The `BinanceFuturesClient` provides the following verified methods:
 - `ping() -> bool`: Basic connectivity test (`GET /fapi/v1/ping`).
