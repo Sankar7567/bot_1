@@ -5,6 +5,14 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-11-23
+### Added
+- Phase 06: Multi-Symbol Strategy Engine implementation (Replacement Prompt 06 / Strategy Amendment v1.1).
+- `src/strategy/models.py`: State models `CandidateState`, `ConfirmationWindow`, `TradeSignal`, enums `Direction`, `CandidateStatus`, `WindowStatus`.
+- `src/strategy/arbitrator.py`: `GlobalSlotArbitrator` providing thread-safe first-trigger-wins slot claiming with deterministic tie-breaking.
+- `src/strategy/engine.py`: `MultiSymbolStrategyEngine` orchestrating 15m trigger window creation, concurrent 1m multi-candidate monitoring, single-attempt window consumption on risk failure, expiration, and state serialization.
+- Comprehensive unit test suite covering all 17 mandatory test scenarios in Replacement Prompt 06.
+
 ## [0.4.0] - 2026-11-23
 ### Added
 - Phase 05: Heikin-Ashi Calculation Engine implementation.

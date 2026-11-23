@@ -39,6 +39,24 @@ All requests target the Binance USDⓈ-M Futures Testnet:
 | `DELETE`| `/fapi/v1/order` | Cancel active protective order (`clientOrderId` or `orderId`). | 1 |
 | `GET` | `/fapi/v1/openOrders` | Query all currently open orders (for crash recovery reconciliation). | 1 or 40 |
 
+### 1.9 Multi-Symbol Strategy Engine Interface (`src/strategy/`)
+
+The `MultiSymbolStrategyEngine` coordinates multi-symbol confirmation windows and first-trigger-wins slot arbitration (Strategy Amendment v1.1):
+- `on_15m_candle_closed(symbols_snapshot: List[ScannedSymbol], closed_15m_ha: Dict[str, HeikinAshiCandle], timestamp_ms: int) -> Optional[ConfirmationWindow]`: Creates and registers a new 15m confirmation window.
+- `on_1m_candle_closed(event: CandleCloseEvent, ha_1m: HeikinAshiCandle) -> Optional[TradeSignal]`: Evaluates 1m candle for candidate; arbitrates global entry slot if aligned.
+- `process_simultaneous_confirmations(candidates: List[CandidateState]) -> Optional[TradeSignal]`: Deterministically arbitrates multiple same-timestamp confirmations using snapshot ranking.
+- `handle_risk_validation_failure(window_id: str, symbol: str, reason: str) -> None`: Consumes the confirmation window when the winner fails risk validation (prevents secondary picks).
+- `expire_active_window(current_time_ms: int) -> None`: Explicitly marks active window and unconfirmed candidates as expired.
+- `serialize_state() -> dict` and `restore_state(state_dict: dict) -> None`: Preserves and restores confirmation window state across restarts.
+
+Data contracts in `src/strategy/models.py`:
+- `Direction`: `LONG`, `SHORT`.
+- `CandidateStatus`: `MONITORING`, `QUALIFIED`, `CANCELLED`, `EXPIRED`.
+- `WindowStatus`: `ACTIVE`, `SLOT_CLAIMED`, `EXPIRED`.
+- `CandidateState`: `symbol`, `direction`, `initial_rank`, `registered_at`, `trigger_15m_candle`, `status`, `confirmation_candle`, `confirmed_at`.
+- `ConfirmationWindow`: `window_id`, `start_timestamp`, `end_timestamp`, `candidates`, `status`, `is_slot_claimed`, `winning_symbol`, `winning_signal`, `window_consumed`.
+- `TradeSignal`: `signal_id`, `window_id`, `symbol`, `direction`, `trigger_15m_timestamp`, `confirmation_1m_timestamp`, `trigger_price`, `confirmation_price`, `candidate_rank`, `created_at`, `expires_at`.
+
 ### 1.8 Heikin-Ashi Indicator Interface (`src/indicators/`)
 
 The `src/indicators/heikin_ashi.py` module provides pure mathematical Heikin-Ashi transformations:
