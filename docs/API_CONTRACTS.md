@@ -98,6 +98,33 @@ Data contracts in `src/risk/models.py`:
 - `SizingInput`: `symbol`, `equity`, `is_long`, `entry_price`, `sl_price`, `step_size`, `min_qty`, `max_qty`, `min_notional`, `tick_size`, `available_margin`, `bracket`, `risk_ratio`, `rr_ratio`, `taker_fee_rate`, `slippage_rate`.
 - `SizingResult`: `is_valid`, `rejection_reason`, `symbol`, `is_long`, `equity`, `risk_budget`, `stop_distance`, `raw_quantity`, `friction_adjusted_qty`, `final_quantity`, `entry_price`, `sl_price`, `tp_price`, `leverage`, `required_margin`, `estimated_liq_price`, `maint_margin_ratio`.
 
+### 1.12 Order Execution Engine Interface (`src/execution/`)
+
+The `src/execution/` package coordinates order preparation, market order entry, network error recovery, fill tracking, and order querying:
+
+**`src/execution/client_id.py`** — Deterministic clientOrderId generator:
+- `generate_client_order_id(prefix: OrderPrefix | str, timestamp_ms: Optional[int] = None, hex_len: int = 6) -> str`: Generates collision-resistant identifier $\le 36$ characters.
+- `is_bot_client_order_id(client_order_id: str) -> bool`: Regex verification of bot-originating order IDs.
+- `parse_client_order_id(client_order_id: str) -> Optional[dict]`: Deconstructs client order ID into prefix, timestamp, and random hex components.
+
+**`src/execution/order_router.py`** — OrderRouter:
+- `execute_market_entry(symbol, side, quantity, leverage, client_order_id=None, fill_timeout_seconds=5.0, poll_interval_seconds=0.2) -> OrderFill`:
+  1. Sets margin type to `ISOLATED` (absorbs -4046 idempotently).
+  2. Sets symbol leverage to target leverage.
+  3. Submits `MARKET` order with traceable `clientOrderId`.
+  4. Automatically reconciles network timeouts by querying exchange with `clientOrderId` prior to declaring failure.
+  5. Polls for fill completion if market order does not fill immediately.
+  6. Handles partial fills by returning executed quantity and average fill price.
+- `query_order_fill(symbol, client_order_id=None, order_id=None) -> OrderFill`: Queries live order status from Binance Futures.
+- `cancel_order(symbol, client_order_id=None, order_id=None) -> Dict[str, Any]`: Cancels an open order idempotently (absorbs -2011 unknown order and -2013 not found).
+
+Data contracts in `src/execution/models.py`:
+- `OrderSide`: `BUY`, `SELL`.
+- `OrderType`: `MARKET`, `LIMIT`, `STOP_MARKET`, `TAKE_PROFIT_MARKET`.
+- `OrderStatus`: `NEW`, `PARTIALLY_FILLED`, `FILLED`, `CANCELED`, `REJECTED`, `EXPIRED`.
+- `OrderExecutionRequest`: `symbol`, `side`, `order_type`, `quantity`, `client_order_id`, `reduce_only`, `stop_price`, `price`, `time_in_force`.
+- `OrderFill`: `symbol`, `client_order_id`, `order_id`, `status`, `side`, `order_type`, `orig_qty`, `executed_qty`, `avg_price`, `cum_quote`, `commission`, `commission_asset`, `transact_time`, `raw_response`. Helpers: `is_fully_filled`, `is_partially_filled`.
+
 ### 1.8 Heikin-Ashi Indicator Interface (`src/indicators/`)
 
 The `src/indicators/heikin_ashi.py` module provides pure mathematical Heikin-Ashi transformations:

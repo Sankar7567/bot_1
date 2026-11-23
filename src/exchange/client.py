@@ -525,3 +525,76 @@ class BinanceFuturesClient:
     return await self._request(
         "POST", "/fapi/v1/leverage", params=params, is_signed=True, weight=1
     )
+
+  # --------------------------------------------------------------------------
+  # Order Execution Methods (added in P09)
+  # --------------------------------------------------------------------------
+
+  async def place_order(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Submits an order to Binance USDⓈ-M Futures.
+
+    Args:
+        params: Raw order parameters dict (symbol, side, type, quantity,
+                clientOrderId, stopPrice, reduceOnly, etc.).
+
+    Returns:
+        Raw exchange response dict containing orderId, clientOrderId,
+        status, avgPrice, executedQty, etc.
+    """
+    return await self._request(
+        "POST", "/fapi/v1/order", params=params, is_signed=True, weight=1
+    )
+
+  async def query_order(
+      self,
+      symbol: str,
+      client_order_id: Optional[str] = None,
+      order_id: Optional[int] = None,
+  ) -> Dict[str, Any]:
+    """Queries an order by clientOrderId or orderId.
+
+    Args:
+        symbol:           Symbol (e.g. 'BTCUSDT').
+        client_order_id:  Bot-generated clientOrderId (preferred for idempotency).
+        order_id:         Exchange orderId (fallback).
+
+    Returns:
+        Raw exchange response with current order status and fill details.
+    """
+    params: Dict[str, Any] = {"symbol": symbol}
+    if client_order_id:
+      params["origClientOrderId"] = client_order_id
+    elif order_id is not None:
+      params["orderId"] = order_id
+    else:
+      raise ValueError("Must supply either client_order_id or order_id.")
+    return await self._request(
+        "GET", "/fapi/v1/order", params=params, is_signed=True, weight=1
+    )
+
+  async def cancel_order(
+      self,
+      symbol: str,
+      client_order_id: Optional[str] = None,
+      order_id: Optional[int] = None,
+  ) -> Dict[str, Any]:
+    """Cancels an active open order.
+
+    Args:
+        symbol:           Symbol.
+        client_order_id:  Bot-generated clientOrderId (preferred).
+        order_id:         Exchange orderId (fallback).
+
+    Returns:
+        Raw exchange response confirming cancellation.
+    """
+    params: Dict[str, Any] = {"symbol": symbol}
+    if client_order_id:
+      params["origClientOrderId"] = client_order_id
+    elif order_id is not None:
+      params["orderId"] = order_id
+    else:
+      raise ValueError("Must supply either client_order_id or order_id.")
+    return await self._request(
+        "DELETE", "/fapi/v1/order", params=params, is_signed=True, weight=1
+    )

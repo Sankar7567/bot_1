@@ -5,6 +5,26 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-23
+### Added
+- Phase 09: Binance Order Execution Engine implementation.
+- `src/execution/client_id.py`: Deterministic clientOrderId generator ensuring $\le 36$ characters, collision resistance, bot prefix tagging (`HA_E`, `HA_SL`, `HA_TP`, `HA_EMG`), regex validation, and parsing.
+- `src/execution/models.py`: Immutable data transfer models `OrderExecutionRequest`, `OrderFill`, and enums `OrderSide`, `OrderType`, `OrderStatus`.
+- `src/execution/exceptions.py`: Structured execution exception hierarchy `ExecutionError`, `OrderRejectedError`, `FillTimeoutError`, `PartialFillError`, `ProtectiveOrderError`, `CancellationError`.
+- `src/execution/order_router.py`: `OrderRouter` orchestrating:
+  - Automated `ISOLATED` margin type setting (idempotently absorbing -4046).
+  - Target leverage configuration on Binance Futures.
+  - Market entry order placement with traceable `clientOrderId`.
+  - Automatic network error reconciliation (query by `clientOrderId` prior to failure).
+  - Immediate fill detection and polling for pending fills.
+  - Partial fill handling: returning fill with actual `executed_qty` and `avg_price`.
+  - Idempotent order cancellation (absorbing -2011 and -2013).
+  - Live order query interface.
+- `src/exchange/client.py`: Added direct REST methods `place_order`, `query_order`, `cancel_order`.
+- `tests/unit/test_execution.py`: 22 unit tests covering client ID generation, uniqueness, parsing, model serialization, immediate fill, margin handling, leverage configuration, network timeout reconciliation, fill polling, fill timeout, and idempotent cancellation.
+- `tests/integration/test_execution_integration.py`: Offline ID compliance test and optional authenticated Testnet connectivity test.
+- `docs/API_CONTRACTS.md`: Added Section 1.12 for Order Execution Engine.
+
 ## [0.7.0] - 2026-11-23
 ### Added
 - Phase 08: Risk Management and Position Sizing implementation.
