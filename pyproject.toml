@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "binance-ha-bot"
+version = "0.1.0"
+description = "Binance USDⓈ-M Futures Automated Trading System using Heikin-Ashi Confirmation & 5-Left/5-Right Swing Points"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Lead Software Architect" }
+]
+dependencies = [
+    "httpx>=0.28.1",
+    "websockets>=13.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-v --strict-markers -ra --cov=src --cov-report=term-missing --cov-report=html"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests (mocked or sandboxed)",
+    "testnet: Real Binance Testnet tests requiring network and credentials",
+    "slow: Tests that take more than 1s to execute",
+]
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/__init__.py",
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+]
