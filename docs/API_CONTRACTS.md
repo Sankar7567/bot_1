@@ -343,6 +343,58 @@ class SizingResult:
   estimated_liquidation_price: float
 ```
 
+### 1.14 Position Manager, State Persistence & Startup Reconciler Interface (`src/positions/` & `src/state/`)
+
+The `src/positions/manager.py` module manages the full position lifecycle, coordinating entry order execution, protective order establishment, and exit fill processing while strictly enforcing the global 1-position invariant.
+
+**`src/positions/manager.py`** — PositionManager:
+- `has_open_position() -> bool`: Returns True if an active or pending position exists in memory or in the persistent SQLite database.
+- `get_current_position() -> Optional[Position]`: Returns in-memory active position.
+- `open_position(signal: TradeSignal, sizing: SizingResult, tick_size: float, step_size: float) -> Position`:
+  1. Enforces single position lock (`PositionLockError` if open/pending).
+  2. Creates and persists initial position record (`PENDING_ENTRY`).
+  3. Executes market entry via `OrderRouter.execute_market_entry`.
+  4. Saves entry order record and updates position with actual executed metrics.
+  5. Places and verifies exchange-side SL and TP orders via `ProtectiveOrderManager.place_protective_orders`.
+  6. Saves protective orders in database and transitions position to `OPEN`.
+  7. On entry failure, marks position `CLOSED` (`ENTRY_FAILED`), logs audit, and releases lock.
+  8. On protective failure (which triggers emergency close), marks position `CLOSED` (`PROTECTION_FAILED_EMERGENCY`), logs audit, and releases lock.
+- `handle_exit_fill(triggered_client_order_id=None, triggered_order_id=None, exit_price=None, exit_qty=None) -> ExitTriggerResult`:
+  1. Identifies position and sets status to `PENDING_EXIT`.
+  2. Cancels sibling order via `ProtectiveOrderManager.cancel_sibling_order`.
+  3. Computes realized PnL from fill price and executed quantity.
+  4. Updates position in database to `CLOSED` with final metrics.
+  5. Updates orders in database (`FILLED` / `CANCELED`).
+  6. Clears in-memory position and releases lock.
+- `emergency_close_current_position(reason='MANUAL_EMERGENCY') -> EmergencyExitResult`: Submits reduceOnly market close order and updates database.
+
+**`src/state/database.py`** — DatabaseManager:
+- Manages SQLite connection with `PRAGMA journal_mode = WAL`, `PRAGMA busy_timeout = 5000`, `PRAGMA foreign_keys = ON`.
+- Manages relational schemas: `positions`, `orders`, `strategy_windows`, `audit_log`.
+
+**`src/state/repository.py`** — StateRepository:
+- Position persistence: `save_position`, `get_position`, `get_open_position`, `close_position`.
+- Order persistence: `save_order`, `update_order_status`, `get_order_by_client_id`, `get_orders_for_position`.
+- Strategy window persistence: `save_strategy_window`, `get_active_strategy_window`.
+- Audit logging: `log_audit`.
+
+**`src/state/reconciler.py`** — StartupReconciler:
+- Reconciles exchange state against local database state across 6 matrix cases:
+  - Case 1 (`CLEAN`): Exchange 0, DB 0, Orders 0 -> No action.
+  - Case 2 (`POSITION_RECOVERED`): Exchange 1, DB matches, SL/TP verified -> Re-hydrates `Position` and `ProtectiveOrderPair`.
+  - Case 3 (`ORPHANED_ORDERS_CLEARED`): Exchange 0, bot orders present -> Cancels orphaned orders.
+  - Case 4 (`UNPROTECTED_EMERGENCY_CLOSE`): Exchange 1, missing SL/TP -> Executes emergency market close.
+  - Case 5 (`CLOSED_WHILE_OFFLINE`): Exchange 0, DB open -> Closes local position and cancels leftover orders.
+  - Case 6 (`MULTIPLE_POSITIONS_ERROR`): Exchange > 1 open positions -> Fatal safety violation (`ReconciliationError`).
+
+Data contracts in `src/positions/models.py` & `src/state/repository.py`:
+- `PositionState`: `IDLE`, `PENDING_ENTRY`, `OPEN`, `PENDING_EXIT`, `CLOSED`.
+- `Position`: `position_id`, `symbol`, `side`, `status`, `quantity`, `entry_price`, `leverage`, `stop_loss_price`, `take_profit_price`, `created_at`, `updated_at`, `protective_pair`, `exit_price`, `realized_pnl`, `exit_reason`, `closed_at`.
+- `PositionRecord`: Table mapping for `positions`.
+- `OrderRecord`: Table mapping for `orders`.
+- `ReconciliationStatus`: `CLEAN`, `POSITION_RECOVERED`, `ORPHANED_ORDERS_CLEARED`, `UNPROTECTED_EMERGENCY_CLOSE`, `CLOSED_WHILE_OFFLINE`, `MULTIPLE_POSITIONS_ERROR`.
+- `ReconciliationReport`: `status`, `details`, `recovered_position`, `cancelled_order_ids`, `emergency_closed`, `timestamp_ms`.
+
 ---
 
 ## 3. Order ID Generation Specification

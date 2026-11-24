@@ -7,11 +7,23 @@ from typing import Optional
 from src.execution.models import OrderSide, OrderType
 
 
+class PositionState(str, Enum):
+  """Lifecycle states of a bot-managed position."""
+
+  IDLE = "IDLE"
+  PENDING_ENTRY = "PENDING_ENTRY"
+  OPEN = "OPEN"
+  PENDING_EXIT = "PENDING_EXIT"
+  CLOSED = "CLOSED"
+
+
 class ExitReason(str, Enum):
   STOP_LOSS = "STOP_LOSS"
   TAKE_PROFIT = "TAKE_PROFIT"
   EMERGENCY = "EMERGENCY"
   MANUAL = "MANUAL"
+  CLOSED_OFFLINE = "CLOSED_OFFLINE"
+  ORPHANED = "ORPHANED"
 
 
 @dataclass
@@ -102,3 +114,35 @@ class EmergencyExitResult:
   is_closed: bool
   error_message: Optional[str] = None
   timestamp_ms: int = 0
+
+
+@dataclass
+class Position:
+  """In-memory active position representation with associated protective orders."""
+
+  position_id: str
+  symbol: str
+  side: OrderSide
+  status: PositionState
+  quantity: float
+  entry_price: float
+  leverage: int
+  stop_loss_price: float
+  take_profit_price: float
+  created_at: int
+  updated_at: int
+  protective_pair: Optional[ProtectiveOrderPair] = None
+  exit_price: Optional[float] = None
+  realized_pnl: Optional[float] = None
+  exit_reason: Optional[str] = None
+  closed_at: Optional[int] = None
+
+  @property
+  def is_active(self) -> bool:
+    """Returns True if position is currently active or pending."""
+    return self.status in (
+        PositionState.PENDING_ENTRY,
+        PositionState.OPEN,
+        PositionState.PENDING_EXIT,
+    )
+

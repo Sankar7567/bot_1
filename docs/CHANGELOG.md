@@ -5,6 +5,35 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-24
+### Added
+- Phase 11: Position Manager, SQLite State Persistence & Startup State Reconciliation.
+- `src/state/database.py`: `DatabaseManager` providing SQLite database initialization with WAL mode (`PRAGMA journal_mode = WAL`), foreign keys (`PRAGMA foreign_keys = ON`), busy timeout 5000ms, and complete schema creation (`positions`, `orders`, `strategy_windows`, `audit_log`).
+- `src/state/repository.py`: `StateRepository` with typed dataclasses `PositionRecord` and `OrderRecord`:
+  - CRUD operations for positions and single active position query (`get_open_position`).
+  - Order tracking, update status, and position linking.
+  - Strategy window persistence and active query.
+  - Immutable audit logging (`log_audit`).
+- `src/positions/manager.py`: `PositionManager`:
+  - Global 1-position lock (`asyncio.Lock` and persistent database check) strictly enforcing single active position invariant.
+  - Coordinated position opening: `PENDING_ENTRY` DB record -> `OrderRouter` market entry -> actual fill metrics -> `ProtectiveOrderManager` SL/TP placement -> `OPEN` state in DB and memory.
+  - Robust failure handling: releases lock and updates DB to `CLOSED` on entry or protective failures.
+  - Exit fill processing (`handle_exit_fill`): coordinates atomic sibling cancellation, calculates realized PnL, transitions to `CLOSED`, updates DB orders, and releases lock.
+  - Emergency manual close (`emergency_close_current_position`).
+- `src/positions/exceptions.py`: `PositionError`, `PositionLockError`, `PositionNotFoundError`.
+- `src/state/reconciler.py`: `StartupReconciler`:
+  - Validates and resolves the 6 startup reconciliation matrix cases:
+    - Case 1: Clean startup (Exchange 0, DB 0, Orders 0 -> `CLEAN`).
+    - Case 2: Matching open position with verified protection -> `POSITION_RECOVERED`.
+    - Case 3: Orphaned orders on exchange with 0 positions -> `ORPHANED_ORDERS_CLEARED`.
+    - Case 4: Unprotected open position on exchange -> `UNPROTECTED_EMERGENCY_CLOSE`.
+    - Case 5: Position closed on exchange while offline -> `CLOSED_WHILE_OFFLINE`.
+    - Case 6: Multiple open positions on exchange -> `ReconciliationError` (Fatal).
+- `tests/unit/test_state.py`: 11 unit tests covering database pragmas, schemas, position CRUD, order CRUD, strategy window persistence, and audit logging.
+- `tests/unit/test_position_manager.py`: 7 unit tests covering global 1-position lock, entry lifecycle, entry error rollback, protective error rollback, exit fill handling with PnL, and emergency position closure.
+- `tests/unit/test_reconciler.py`: 6 unit tests validating all 6 startup reconciliation matrix scenarios.
+- `docs/API_CONTRACTS.md`: Added Section 1.14 documenting Position Manager, SQLite State Persistence, and Startup Reconciler interfaces.
+
 ## [0.9.0] - 2026-11-24
 ### Added
 - Phase 10: Protective Order Manager implementation.
