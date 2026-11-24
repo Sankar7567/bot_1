@@ -230,3 +230,36 @@
 
 ### Next Actions:
 - Proceed to Phase 10: Protective Order Manager upon review and approval.
+
+
+## Phase 10: Protective Order Manager
+**Date:** 2026-11-24
+**Status:** Completed
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer
+
+### Work Completed:
+1. **Directional Tick-Size Price Rounding:**
+   - Implemented `round_price_directional` in `src/positions/protective.py` enforcing exact exchange rules:
+     - LONG: stop-loss rounded DOWN (floor) to maintain $\ge$ intended distance; take-profit rounded UP (ceil) to ensure $\ge 3R$ gross reward.
+     - SHORT: stop-loss rounded UP (ceil); take-profit rounded DOWN (floor).
+     - Scaled integer arithmetic prevents decimal precision drift and division by zero across all tick sizes ($0.01, 0.5, 1.0$, etc.).
+2. **Post-Fill Recalculation & Order Placement:**
+   - Sizing of protective orders strictly matches the actual `executedQty` from the entry fill.
+   - Recalculates stop distance and 3:1 TP from the actual average entry price `avg_entry_price`.
+   - Submits exchange-side `STOP_MARKET` (`HA_SL_`) and `TAKE_PROFIT_MARKET` (`HA_TP_`) orders with `reduceOnly=true`.
+   - Confirms that both orders enter `NEW` state on the exchange via post-placement querying.
+3. **Fail-Safe Emergency Position Mitigation:**
+   - If either protective order fails placement or validation, any placed conditional order is cancelled and an emergency market close (`HA_EMG_`, `reduceOnly=true`) is immediately executed to prevent unprotected exposure.
+4. **Sibling Order Cancellation & Zero Exposure Verification:**
+   - Implemented `cancel_sibling_order`:
+     - Identifies which order filled (SL vs TP).
+     - Immediately cancels the remaining sibling order via REST, absorbing `-2011` / `-2013` if already terminated.
+     - Polls `get_positions` on the exchange to verify net position exposure is zero (`not pos.is_open`).
+     - Returns `ExitTriggerResult` and deregisters active pair.
+5. **Verification & Testing:**
+   - Authored unit test suite in `tests/unit/test_protective.py` (21 tests).
+   - Executed full project test suite: **228 passed, 2 skipped** (testnet credentials).
+   - Achieved **88.91%** total project branch coverage across 1,992 statements.
+
+### Next Actions:
+- Proceed to Phase 11: Position Manager and State Recovery upon review and approval.

@@ -5,6 +5,21 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-24
+### Added
+- Phase 10: Protective Order Manager implementation.
+- `src/positions/protective.py`: `ProtectiveOrderManager` and directional tick rounding:
+  - Directional price rounding (`round_price_directional`): strict floor for LONG SL and SHORT TP, strict ceil for LONG TP and SHORT SL, using integer scaled arithmetic avoiding zero-division and precision drift.
+  - Post-entry fill recalculation: recalculates stop distance and 3:1 TP based on actual fill price and sizes protective orders strictly against `executed_qty`.
+  - Submits exchange-side conditional orders with `reduceOnly=true` (`STOP_MARKET` and `TAKE_PROFIT_MARKET`).
+  - Active verification: validates both orders are in `NEW` state on exchange.
+  - Sibling cancellation: atomic cancellation of remaining sibling order when SL or TP fills, with absorption of -2011/-2013 if already terminated.
+  - Zero net exposure verification: polls `get_positions` to confirm position closure.
+  - Fail-safe emergency market close: cancels active conditional orders and submits market close (`HA_EMG_`) on placement or verification failure.
+- `src/positions/models.py`: `ProtectiveOrderPair`, `ExitTriggerResult`, `EmergencyExitResult`, `ExitReason`.
+- `tests/unit/test_protective.py`: 21 unit tests covering directional price rounding, order pair model helpers, order placement, entry recalculation, emergency fail-safe close on placement/verification error, sibling cancellation, and position closure verification.
+- `docs/API_CONTRACTS.md`: Added Section 1.13 for Protective Order Manager.
+
 ## [0.8.0] - 2026-11-23
 ### Added
 - Phase 09: Binance Order Execution Engine implementation.

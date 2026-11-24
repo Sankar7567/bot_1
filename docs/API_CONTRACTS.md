@@ -125,6 +125,32 @@ Data contracts in `src/execution/models.py`:
 - `OrderExecutionRequest`: `symbol`, `side`, `order_type`, `quantity`, `client_order_id`, `reduce_only`, `stop_price`, `price`, `time_in_force`.
 - `OrderFill`: `symbol`, `client_order_id`, `order_id`, `status`, `side`, `order_type`, `orig_qty`, `executed_qty`, `avg_price`, `cum_quote`, `commission`, `commission_asset`, `transact_time`, `raw_response`. Helpers: `is_fully_filled`, `is_partially_filled`.
 
+### 1.13 Protective Order Manager Interface (`src/positions/`)
+
+The `src/positions/` package manages exchange-side protective orders (`STOP_MARKET` and `TAKE_PROFIT_MARKET`), directional tick rounding, post-entry SL/TP recalculation, atomic sibling order cancellation, and fail-safe emergency market close procedures:
+
+**`src/positions/protective.py`** — ProtectiveOrderManager:
+- `round_price_directional(price: float, tick_size: float, round_up: bool) -> float`: Rounds price to tick size either strictly UP (ceil) or strictly DOWN (floor) using integer scaled arithmetic.
+- `place_protective_orders(symbol, entry_side, executed_qty, avg_entry_price, stop_loss_price, tick_size, step_size, take_profit_price=None, rr_ratio=3.0, working_type='CONTRACT_PRICE', verify_on_exchange=True) -> ProtectiveOrderPair`:
+  1. Recalculates SL and 3:1 TP using actual entry fill price.
+  2. Applies directional rounding: LONG (SL floor, TP ceil); SHORT (SL ceil, TP floor).
+  3. Sizes both conditional orders strictly against `executed_qty` (`reduceOnly=true`).
+  4. Places `STOP_MARKET` with `HA_SL_` clientOrderId and `TAKE_PROFIT_MARKET` with `HA_TP_` clientOrderId.
+  5. Verifies both orders are in `NEW` state on exchange.
+  6. On placement/verification failure, executes emergency mitigation: cancels any placed order and executes emergency market close.
+- `cancel_sibling_order(triggered_client_order_id=None, triggered_order_id=None, active_pair=None, symbol=None, verify_position_closed=True) -> ExitTriggerResult`:
+  - When SL fills, cancels TP order.
+  - When TP fills, cancels SL order.
+  - Verifies position is closed on exchange (zero net exposure).
+- `verify_position_closed(symbol, timeout_seconds=5.0, poll_interval_seconds=0.2) -> bool`: Queries exchange position to verify `not pos.is_open`.
+- `execute_emergency_market_close(symbol, position_side, quantity) -> EmergencyExitResult`: Submits reduceOnly `MARKET` order with `HA_EMG_` clientOrderId to immediately eliminate exposure.
+
+Data contracts in `src/positions/models.py`:
+- `ExitReason`: `STOP_LOSS`, `TAKE_PROFIT`, `EMERGENCY`, `MANUAL`.
+- `ProtectiveOrderPair`: `symbol`, `entry_side`, `exit_side`, `quantity`, `avg_entry_price`, `sl_order_id`, `sl_client_order_id`, `sl_price`, `tp_order_id`, `tp_client_order_id`, `tp_price`, `created_at`, `is_active`. Helpers: `is_sl_order`, `is_tp_order`, `get_sibling_order_details`.
+- `ExitTriggerResult`: `symbol`, `triggered_client_order_id`, `triggered_type`, `exit_reason`, `cancelled_sibling_client_order_id`, `sibling_cancellation_success`, `position_closed_verified`, `timestamp_ms`.
+- `EmergencyExitResult`: `symbol`, `emergency_client_order_id`, `quantity`, `is_closed`, `error_message`, `timestamp_ms`.
+
 ### 1.8 Heikin-Ashi Indicator Interface (`src/indicators/`)
 
 The `src/indicators/heikin_ashi.py` module provides pure mathematical Heikin-Ashi transformations:
