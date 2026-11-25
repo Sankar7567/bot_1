@@ -1,5 +1,17 @@
 # Binance Futures HA Trading Bot — Development Log
 
+## Amendment 01: Chronological Backtesting & Live-Trading Replay Specification (Section 6.1)
+**Date:** 2026-11-25  
+**Status:** Specification & Architecture Incorporated  
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer  
+
+### Work Completed:
+1. **Requirements & Parity Design:**
+   - Incorporated Amendment 01 (Section 6.1) into `docs/PROJECT_SPEC.md`, `docs/ARCHITECTURE.md`, `docs/API_CONTRACTS.md`, `docs/TEST_PLAN.md`, and `docs/CHANGELOG.md`.
+   - Documented exact rolling 24h percentage gain and rolling 24h quote volume reconstruction formulas consistent with Binance `/fapi/v1/ticker/24hr`, avoiding silent daily-candle substitution and incomplete-interval fabrication.
+   - Defined the shared-engine adapter architecture (`src/backtesting/` implementing exchange/clock adapters around the existing `MarketScanner`, `HeikinAshiSeries`, `MultiSymbolStrategyEngine`, `SwingDetector`, `RiskValidator`, `OrderRouter`, `ProtectiveOrderManager`, and `PositionManager`).
+   - Specified all 17 mandatory chronological validation tests under Phase 13 in `docs/TEST_PLAN.md`.
+
 ## Phase 11: Position Manager, SQLite State Persistence & Startup Reconciliation
 **Date:** 2026-11-24  
 **Status:** Completed  

@@ -111,9 +111,28 @@ To protect capital and guarantee algorithmic correctness, the system adheres to 
 - Complete lifecycle simulation: Scan $\rightarrow$ Trigger $\rightarrow$ Confirm $\rightarrow$ Size $\rightarrow$ Entry $\rightarrow$ Protection $\rightarrow$ Exit $\rightarrow$ Reconciliation.
 - Concurrency and graceful shutdown handling (`SIGINT`/`SIGTERM`).
 
-### P13 — Paper Trading & Strategy Simulation
-- Historical replay without exchange order submission.
-- Metric calculation: Win Rate, Profit Factor, Max Drawdown, Sharpe Ratio, Expectancy.
+### P13 — Chronological Backtesting, Historical Replay & Paper Trading (Amendment 01)
+- Historical replay without exchange order submission, reusing shared live Scanner/HA/Strategy/Swing/Risk/Position modules via adapters.
+- **17 Mandatory Chronological Validation Tests (Amendment 01 §6.1.16):**
+  1. Day-3 top gainer does not appear in Day-1 ranking unless genuinely qualified on Day 1.
+  2. Dramatic post-signal price surges do not influence earlier scanner rankings.
+  3. Mid-window top-20 entrant is ignored until the next 15-minute snapshot boundary.
+  4. Rolling 24-hour gain ranking properly diverges from UTC daily candle percentage change.
+  5. Scanner rankings update every 60s strictly using historical timestamp $T$.
+  6. Candidates are monitored across all 15 one-minute closed candles within the window.
+  7. Opposite or doji 1m candles do not invalidate an active candidate.
+  8. Same-timestamp confirmations resolve deterministically via original snapshot rank.
+  9. 5L/5R swing pivots remain unavailable until all 5 right-side 1m candles have closed.
+  10. Backtester never accesses future candles when evaluating any historical signal.
+  11. Market entry executes at next available price after signal confirmation & latency, never retrospectively.
+  12. SL/TP execution evaluates against actual market OHLC prices (never HA OHLC).
+  13. Same-bar SL/TP touch ambiguity resolves via higher-resolution data or documented conservative SL-first rule with audit trail record.
+  14. Account equity, isolated margin, and 10% risk budget dynamically update after every closed trade.
+  15. Global single-position lock blocks overlapping entries across consecutive windows.
+  16. Data quality anomalies (missing/duplicate/out-of-order bars, invalid OHLC, incomplete warm-up, listing boundaries) are detected and reported without silent interpolation.
+  17. Re-running with identical data and configuration produces bit-for-bit deterministic results.
+- Synthetic deterministic verification fixtures + realistic downloaded historical market data integration replay.
+- Complete metric reporting: Market Selection, Strategy, Trading Performance (Win Rate, Profit Factor, Expectancy), Risk (Max Drawdown), Costs (Fees, Funding, Spread, Slippage), and Equity curves.
 
 ### P14 — Binance Testnet Operational Validation
 - End-to-end execution against live Binance Testnet.

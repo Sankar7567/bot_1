@@ -5,6 +5,14 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-11-25
+### Added
+- **Amendment 01 (Section 6.1): Historically Accurate, Chronological Backtesting and Live-Trading Replay**:
+  - Added Section 6.1 to `docs/PROJECT_SPEC.md` defining strict non-lookahead chronological simulation, historical universe reconstruction (listing/delisting survivorship avoidance), rolling 24h ticker formula & completeness guards, 60s scanner + 15m frozen snapshot timing, warm-up rules, shared live-engine parity, realistic latency/spread/slippage/fee/funding execution, conservative SL/TP ambiguity resolution, full equity accounting, and complete audit trail.
+  - Added `src/backtesting/` module architecture to `docs/ARCHITECTURE.md`.
+  - Added Section 1.15 (`src/backtesting/` interface contracts, rolling 24h formula, execution assumptions, and report schemas) to `docs/API_CONTRACTS.md`.
+  - Expanded Phase P13 in `docs/TEST_PLAN.md` with all 17 mandatory chronological validation tests from Amendment 01 §16.
+
 ## [0.10.0] - 2026-11-24
 ### Added
 - Phase 11: Position Manager, SQLite State Persistence & Startup State Reconciliation.

@@ -395,6 +395,30 @@ Data contracts in `src/positions/models.py` & `src/state/repository.py`:
 - `ReconciliationStatus`: `CLEAN`, `POSITION_RECOVERED`, `ORPHANED_ORDERS_CLEARED`, `UNPROTECTED_EMERGENCY_CLOSE`, `CLOSED_WHILE_OFFLINE`, `MULTIPLE_POSITIONS_ERROR`.
 - `ReconciliationReport`: `status`, `details`, `recovered_position`, `cancelled_order_ids`, `emergency_closed`, `timestamp_ms`.
 
+### 1.15 Chronological Backtesting & Replay Interface (`src/backtesting/` — Amendment 01 §6.1)
+
+The `src/backtesting/` package provides a deterministic forward-walking simulation harness that supplies simulated time, reconstructed exchange state, and conservative execution to the **unmodified shared live components**:
+
+**`src/backtesting/data_adapter.py`** — Historical Data & Rolling Ticker Reconstruction:
+- **Exact Rolling 24h Ticker Formula:** At simulated UTC timestamp $T$:
+  - Lookback boundary: $T_{\text{24h}} = T - 86,400,000\text{ ms}$.
+  - Base reference price $P_{\text{base}}$: `open` of the earliest completed candle whose `open_time >= T - 86,400,000` (aligned to exact 1m bar).
+  - Current price $P_{\text{last}}$: `close` of the latest completed candle with `close_time <= T`.
+  - Rolling 24h gain: $\frac{P_{\text{last}} - P_{\text{base}}}{P_{\text{base}}} \times 100$.
+  - Rolling 24h quote volume: sum of `quote_volume` (or $volume \times close$ where quote volume is absent, flagged in data quality metadata) across completed 1m bars in $(T_{\text{24h}}, T]$.
+  - Completeness requirement: if historical coverage in $(T_{\text{24h}}, T]$ falls below the minimum continuity threshold (or prior to contract listing timestamp), mark the window incomplete and exclude rather than inventing rankings.
+- `HistoricalDataFeed`: Implements chronological event emission (`get_exchange_info(at_ms)`, `get_24hr_tickers(at_ms)`, `get_klines(...)`, `validate_quality()`). Enforces listing/delisting boundaries `[listed_at, delisted_at]`.
+
+**`src/backtesting/exec_adapter.py`** — Conservative Historical Execution & SL/TP Simulator:
+- `ExecutionAssumptions`: `signal_to_order_latency_ms`, `half_spread_bps`, `entry_slippage_bps`, `stop_slippage_bps`, `taker_fee_rate`, `maker_fee_rate`, `funding_rate_8h`, `ambiguity_resolution` (`"CONSERVATIVE_SL_FIRST"`).
+- Distinct execution timestamps/prices: `signal_timestamp`, `order_submitted_at`, `fill_timestamp`, `fill_price`, `sl_trigger_price`, `sl_fill_price`, `tp_trigger_price`, `tp_fill_price`.
+- Implements the same async methods consumed by `OrderRouter` and `ProtectiveOrderManager` (`change_margin_type`, `change_leverage`, `place_order`, `query_order`, `cancel_order`, `get_positions`, `get_open_orders`, `get_account_info`, `get_leverage_brackets`).
+
+**`src/backtesting/ledger.py` & `src/backtesting/metrics.py`** — Accounting, Audit & Reporting:
+- `AccountLedger`: Tracks running wallet balance, isolated margin locked, unrealized/realized PnL, taker fees, spread cost, slippage cost, funding cashflows, equity curve points, and daily breakdown.
+- `TradeAuditRecord`: Full chronological trace linking scanner rank, frozen top-20 snapshot, 15m trigger bar, 1m candidate evaluations, winning bar, tie-breaker details, confirmed pivot & confirmation timestamp, sizing input/output, execution fills, funding/fees, and exit resolution.
+- `BacktestReport`: Standardized report covering Config & Provenance Metadata, Data Quality Report, Market Selection Metrics, Strategy Metrics, Trading Performance Metrics, Risk Metrics, Cost Breakdown, Equity Summary, and `TradeAuditRecord` list.
+
 ---
 
 ## 3. Order ID Generation Specification

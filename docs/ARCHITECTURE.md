@@ -118,6 +118,14 @@ src/
 │   ├── database.py     # SQLite connection, migrations, and atomic transactions
 │   ├── repository.py   # CRUD for positions, orders, signals, and audits
 │   └── reconciler.py   # Startup reconciliation against exchange state
+├── backtesting/        # Chronological replay & backtest adapters (Amendment 01)
+│   ├── __init__.py
+│   ├── clock.py        # Deterministic simulated UTC clock & event priority queue
+│   ├── data_adapter.py # Historical OHLCV store, quality checks & rolling 24h ticker reconstructor
+│   ├── exec_adapter.py # Conservative simulated fill, slippage, fee, funding & SL/TP engine
+│   ├── ledger.py       # Chronological equity accounting & isolated margin tracker
+│   ├── metrics.py      # Market, strategy, performance, risk, cost & equity report builder
+│   └── runner.py       # Forward-walking replay loop sharing live Scanner/Strategy/Risk/PM core
 └── monitoring/         # Logging, telemetry, and secret protection
     ├── __init__.py
     ├── logger.py       # Structured logging with secret redaction
@@ -208,6 +216,14 @@ src/
   - Maintains SQLite database with WAL (Write-Ahead Logging) mode.
   - Persists state transitions atomically.
   - Startup reconciliation: queries open positions and orders on Binance, aligns local database, cleans orphaned orders, and halts if manual intervention is required.
+
+### 3.11 Chronological Backtesting & Historical Replay Engine (`src/backtesting/` — Amendment 01)
+- **Responsibilities:**
+  - Enforces **zero strategy divergence**: wraps the exact shared `MarketScanner`, `HeikinAshiSeries`, `MultiSymbolStrategyEngine`, `SwingDetector`, `RiskValidator`, `OrderRouter`, `ProtectiveOrderManager`, and `PositionManager` via adapter interfaces.
+  - Advances a deterministic UTC simulated clock event-by-event with strict same-timestamp tie-breaking.
+  - Reconstructs historical contract eligibility (including listing/delisting timestamps) and rolling 24-hour gain/volume snapshots every 60 seconds without look-ahead bias.
+  - Simulates conservative next-available-price fills, spread, slippage, taker fees, funding rates, and actual-OHLC SL/TP execution (recording conservative same-candle ambiguity resolution).
+  - Tracks live-equivalent account equity, isolated margin, and full per-trade audit trails for 100% reproducibility.
 
 ---
 

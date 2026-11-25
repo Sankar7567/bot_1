@@ -119,6 +119,37 @@ The system operates under a strict **Testnet-First** rule: no real-money trading
 
 ---
 
+## 6.1 Historically Accurate, Chronological Backtesting and Live-Trading Replay (Amendment 01)
+
+**Priority: CRITICAL** — Extends Section 6 (Cross-System Integration Requirements), Workflow A — Historical Backtesting.
+
+The backtesting engine must behave as a **strict chronological simulation of the live trading system**, reproducing the exact decision-making process, information boundaries, timing, and execution behavior at every historical UTC timestamp — never a retrospective signal finder.
+
+### 6.1.1 Core Backtest Invariants & Parity
+1. **Engine Parity (Adapter Pattern):** The simulator MUST reuse the exact shared components (`MarketScanner`, `is_eligible_contract`, `is_eligible_ticker`, `deterministic_ranking_sort_key`, `HeikinAshiSeries`, `MultiSymbolStrategyEngine`, `SwingDetector`, `validate_and_size_position`, `OrderRouter`, `ProtectiveOrderManager`, `PositionManager`). Different behavior between live and backtest is strictly isolated inside a `HistoricalExchangeAdapter` / data adapter and simulated clock.
+2. **Historical Market Reconstruction:** Reconstructs contract listing/delisting status (avoiding survivorship bias), active flags, market prices, rolling 24h percentage change, rolling 24h volume, liquidity eligibility, 1m/15m candle availability, and data quality at every timestamp.
+3. **Rolling 24-Hour Top-Gainer Ranking:**
+   - Must calculate rolling 24h change and rolling 24h quote volume using only data strictly closed/available up to timestamp $T$ (consistent with Binance `/fapi/v1/ticker/24hr`), never silently substituting UTC daily candle gain:
+     $$\Delta\%_{24\text{h}}(T) = \frac{\text{Close}(T) - \text{Open}(T - 24\text{h})}{\text{Open}(T - 24\text{h})} \times 100, \qquad V_{24\text{h}}(T) = \sum_{k \in (T - 24\text{h}, T]} \text{QuoteVolume}_k$$
+   - Periods with insufficient 24h lookback history must be marked incomplete rather than fabricating rankings.
+4. **Scanner & Snapshot Timing:**
+   - Refreshes market ranking every **60 seconds** in simulated UTC time.
+   - At each completed 15-minute boundary, freezes the latest valid top-20 snapshot for that window; mid-window top-20 entrants are ignored until the next 15m boundary.
+5. **Strict Chronological Forward-Walking & Warm-up:**
+   - Deterministic UTC event loop: Historical data arrival $\rightarrow$ Validation $\rightarrow$ Scanner refresh $\rightarrow$ Ranking $\rightarrow$ 15m snapshot $\rightarrow$ HA calculation $\rightarrow$ Candidate creation $\rightarrow$ 1m monitoring $\rightarrow$ Signal coordination $\rightarrow$ Swing validation $\rightarrow$ Risk validation $\rightarrow$ Entry simulation $\rightarrow$ Position management $\rightarrow$ SL/TP execution $\rightarrow$ Position closure $\rightarrow$ Equity update.
+   - Warm-up history preceding the requested interval initializes 24h rolling tickers, 1m/15m HA state, and 5L/5R swing pivots; trades are counted only inside the requested interval.
+   - Zero look-ahead bias: completed candles (`close_time <= current_time_ms`) and confirmed swings (bar $i$ available only after bar $i+5$ closes) only.
+6. **Realistic Trade Execution, SL/TP & Financial Accounting:**
+   - Distinct tracking of signal price, order submission time, simulated fill time (next executable price after confirmation close/latency), simulated fill price (with conservative spread/slippage/fees), and post-fill SL/TP recalculation.
+   - SL/TP checked strictly against actual market OHLC prices (never HA prices). Same-bar SL & TP touch resolves via higher-resolution data if present, else a documented conservative rule (SL triggered first), with resolution recorded in audit logs.
+   - Full chronological equity accounting: dynamic 10% risk on current simulated equity, entry/exit fees, funding payments, spread, slippage, isolated margin, leverage brackets, liquidation checks, and global 1-position enforcement.
+7. **Data Quality, Metrics, Reproducibility & Audit Trail:**
+   - Detects and reports missing/duplicate/out-of-order candles, invalid OHLC, missing volume, stale intervals, and listing boundaries without silent price interpolation.
+   - Reports complete metrics across Market Selection, Strategy, Trading Performance, Risk, Costs, and Equity, plus full per-trade auditable event history and configuration/data version metadata.
+   - Must pass all 17 mandatory chronological validation tests (Amendment 01 §16).
+
+---
+
 ## 3. Ambiguities, Edge Cases & Technical Risks
 
 | # | Risk / Ambiguity | Potential Impact | Mitigation / Architectural Decision |
