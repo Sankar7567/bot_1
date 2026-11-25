@@ -1,5 +1,20 @@
 # Binance Futures HA Trading Bot — Development Log
 
+## Phase 14: Binance Testnet Operational Validation & Fault Injection
+**Date:** 2026-11-25  
+**Status:** Completed  
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer  
+
+### Work Completed:
+1. **Fault Injection & Resilience Verification (`tests/integration/test_fault_injection.py`):**
+   - Verified `BinanceUserDataStream` auto-reconnect on `ConnectionClosed`, `listenKeyExpired` recovery, keepalive retry resilience, and per-handler exception isolation.
+   - Verified `TradingBotOrchestrator._position_watchdog_loop` recovery when a WebSocket `ORDER_TRADE_UPDATE` exit fill is missed, cleanly closing the DB position and cancelling the sibling order.
+   - Verified `PositionManager` + `ProtectiveOrderManager` emergency market-close mitigation and global position-lock release when protective order placement fails after entry fill.
+2. **Testnet Operational Validation Suite (`tests/integration/test_testnet_operational.py`):**
+   - Added `@pytest.mark.testnet` end-to-end preflight, reconciliation, top-20 scan, and 15m/1m Heikin-Ashi seeding validation against `https://testnet.binancefuture.com`.
+3. **Verification & Testing:**
+   - Full test suite passed: 280 passed, 3 skipped (testnet-gated), 86.71% branch coverage across `src/`.
+
 ## Phase 13: Chronological Backtesting & Live-Trading Replay (Amendment 01)
 **Date:** 2026-11-25  
 **Status:** Completed  

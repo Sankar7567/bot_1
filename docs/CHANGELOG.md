@@ -5,6 +5,12 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-11-25
+### Added
+- Phase 14: Binance Testnet Operational Validation & Fault Injection.
+- `tests/integration/test_fault_injection.py`: Added fault-injection integration tests covering `BinanceUserDataStream` WebSocket disconnects, `listenKeyExpired` reconnects, keepalive failure recovery, handler error isolation, `TradingBotOrchestrator` watchdog recovery on missed TP exit fills, and `ProtectiveOrderManager` emergency market-close rollback & lock release on protective order failure.
+- `tests/integration/test_testnet_operational.py`: Added `@pytest.mark.testnet` end-to-end operational validation suite verifying connectivity, server time sync, one-way mode, `StartupReconciler`, `MarketScanner` top-20, and `MarketDataEngine` 15m/1m Heikin-Ashi seeding against live Binance Futures Testnet when credentials are configured.
+
 ## [0.12.0] - 2026-11-25
 ### Added
 - Phase 13: Historically Accurate, Chronological Backtesting & Live-Trading Replay (Amendment 01 §6.1).
