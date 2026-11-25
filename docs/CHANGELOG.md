@@ -5,6 +5,34 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-25
+### Added
+- Amendment 02: Complete 22-manual documentation system covering installation, configuration, all implemented features, backtesting, trading modes, CLI, testing, troubleshooting, backup, security, and developer extension guide.
+- `docs/USER_MANUAL.md`: Operating modes, daily workflows, interaction patterns.
+- `docs/INSTALLATION_GUIDE.md`: Full fresh-install guide for Ubuntu/Linux.
+- `docs/QUICK_START.md`: Path A (Testnet) and Path B (first backtest) guided quick starts.
+- `docs/CONFIGURATION_GUIDE.md`: All 22 `Settings` fields with env var, type, default, and validator notes.
+- `docs/API_KEY_SETUP.md`: Binance Testnet and production API key creation, permissions, and exposure response.
+- `docs/SECURITY_GUIDE.md`: SecretStr, log redaction, file permissions, and least-privilege key policy.
+- `docs/MARKET_SCANNER_MANUAL.md`: Universe filters, top-20 ranking algorithm, refresh timing, and failure handling.
+- `docs/STRATEGY_MANUAL.md`: Heikin-Ashi math, signal lifecycle state machine, and worked trade examples.
+- `docs/RISK_MANAGEMENT_MANUAL.md`: 5L/5R pivot rules, equity sizing math, and all rejection reasons.
+- `docs/BACKTESTING_MANUAL.md`: `ChronologicalBacktestRunner` API, `BacktestReport` metric definitions, and known limitations.
+- `docs/PAPER_TRADING_MANUAL.md`: Documents NOT IMPLEMENTED status; Binance Testnet and chronological replay as alternatives.
+- `docs/LIVE_TRADING_MANUAL.md`: Pre-activation checklist, production config, emergency stop procedures.
+- `docs/DASHBOARD_MANUAL.md`: Documents NOT IMPLEMENTED status; CLI/SQLite/log equivalents for every dashboard concept.
+- `docs/TERMINAL_MANUAL.md`: All verified CLI commands (`--check-config`, `pytest`, `sqlite3`, `tail`, `git`).
+- `docs/TRADE_HISTORY_AND_ANALYTICS.md`: SQLite schema, useful queries, `BacktestReport` reference.
+- `docs/MONITORING_AND_LOGS.md`: Log file, rotation (10 MB × 5), log format, monitoring commands.
+- `docs/TESTING_GUIDE.md`: All test suite commands, baseline (280 passed, 86.71 % branch coverage).
+- `docs/TROUBLESHOOTING.md`: 8 categories with symptoms, causes, diagnostics, and resolution.
+- `docs/BACKUP_AND_RECOVERY.md`: SQLite WAL backup and restore without secrets.
+- `docs/MAINTENANCE_GUIDE.md`: Code updates, DB practices, Git workflow.
+- `docs/DEVELOPER_GUIDE.md`: Architecture diagram, module table, extension guide.
+- `docs/FAQ.md`: Five key frequently asked questions.
+- `docs/FULL_REFERENCE.md`: Single consolidated reference document combining the root README and all 32 documentation files (209 KB) for agent analysis.
+- Updated root `README.md` with full feature table, architecture overview, technology stack, supported modes, known limitations, complete docs link table, and directory structure.
+
 ## [1.0.0] - 2026-11-25
 ### Added
 - Phase 15: Independent Audit & Deployment Readiness Sign-Off.
