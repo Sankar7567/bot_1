@@ -102,6 +102,7 @@ class BinanceFuturesClient:
       endpoint: str,
       params: Optional[Dict[str, Any]] = None,
       is_signed: bool = False,
+      api_key_only: bool = False,
       weight: int = 1,
   ) -> Any:
     """Executes an HTTP request with rate-limiting, signing, error classification, and retry logic."""
@@ -125,6 +126,13 @@ class BinanceFuturesClient:
           secret=sec_val,
           timestamp_ms=synced_time,
       )
+    elif api_key_only:
+      key_val = self.api_key.get_secret_value()
+      if not key_val:
+        raise BinanceAuthError(
+            "API Key must be configured for User Data Stream requests."
+        )
+      headers["X-MBX-APIKEY"] = key_val
 
     url = endpoint if endpoint.startswith("/") else f"/{endpoint}"
     attempt = 0
@@ -138,6 +146,10 @@ class BinanceFuturesClient:
           )
         elif method.upper() == "POST":
           response = await self._client.post(
+              url, params=request_params, headers=headers
+          )
+        elif method.upper() == "PUT":
+          response = await self._client.put(
               url, params=request_params, headers=headers
           )
         elif method.upper() == "DELETE":
@@ -597,4 +609,30 @@ class BinanceFuturesClient:
       raise ValueError("Must supply either client_order_id or order_id.")
     return await self._request(
         "DELETE", "/fapi/v1/order", params=params, is_signed=True, weight=1
+    )
+
+  # --------------------------------------------------------------------------
+  # User Data Stream Listen Key Endpoints (added in P12)
+  # --------------------------------------------------------------------------
+
+  async def create_listen_key(self) -> str:
+    """Starts a new User Data Stream and returns the listenKey."""
+    data = await self._request(
+        "POST", "/fapi/v1/listenKey", api_key_only=True, weight=1
+    )
+    key = data.get("listenKey", "")
+    if not key:
+      raise BinanceConnectorError("Binance failed to return a valid listenKey.")
+    return key
+
+  async def keepalive_listen_key(self) -> None:
+    """Extends the validity of the current User Data Stream listenKey."""
+    await self._request(
+        "PUT", "/fapi/v1/listenKey", api_key_only=True, weight=1
+    )
+
+  async def close_listen_key(self) -> None:
+    """Closes the active User Data Stream listenKey."""
+    await self._request(
+        "DELETE", "/fapi/v1/listenKey", api_key_only=True, weight=1
     )

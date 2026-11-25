@@ -419,6 +419,20 @@ The `src/backtesting/` package provides a deterministic forward-walking simulati
 - `TradeAuditRecord`: Full chronological trace linking scanner rank, frozen top-20 snapshot, 15m trigger bar, 1m candidate evaluations, winning bar, tie-breaker details, confirmed pivot & confirmation timestamp, sizing input/output, execution fills, funding/fees, and exit resolution.
 - `BacktestReport`: Standardized report covering Config & Provenance Metadata, Data Quality Report, Market Selection Metrics, Strategy Metrics, Trading Performance Metrics, Risk Metrics, Cost Breakdown, Equity Summary, and `TradeAuditRecord` list.
 
+### 1.16 Main Orchestrator & User Data Stream (`src/orchestrator.py`, `src/execution/user_stream.py`, `src/main.py`)
+
+**`src/execution/user_stream.py`** — `BinanceUserDataStream`:
+- Manages `/fapi/v1/listenKey` lifecycle (`POST` create, `PUT` keepalive every 30m, `DELETE` close).
+- Subscribes to User Data WebSocket stream and dispatches `ORDER_TRADE_UPDATE` execution events to registered handlers.
+
+**`src/orchestrator.py`** — `TradingBotOrchestrator`:
+- Integrates `Settings`, `DatabaseManager`, `StateRepository`, `BinanceFuturesClient`, `MarketScanner`, `MarketDataEngine`, per-symbol `HeikinAshiSeries` (15m/1m), `MultiSymbolStrategyEngine`, `SwingDetector`, `validate_and_size_position`, `OrderRouter`, `ProtectiveOrderManager`, `PositionManager`, `StartupReconciler`, and `BinanceUserDataStream`.
+- Lifecycle methods: `startup(verify_connectivity=True, start_streams=True)`, `sync_universe(top_symbols)`, `on_candle_closed(event)`, `flush_15m_close(close_time_ms)`, `flush_1m_close(close_time_ms)`, `on_trade_signal(signal)`, `on_order_trade_update(payload)`, `run_forever()`, `shutdown()`.
+- Protects active confirmation window and open position symbols during universe refreshes, runs a fallback position watchdog loop, and gracefully tears down background tasks, WebSocket connections, HTTP client, and SQLite DB on shutdown.
+
+**`src/main.py`** — CLI Entrypoint:
+- Parses `--check-config` / starts async orchestrator with `SIGINT`/`SIGTERM` signal handlers.
+
 ---
 
 ## 3. Order ID Generation Specification

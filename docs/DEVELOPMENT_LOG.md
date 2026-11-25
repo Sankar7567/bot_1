@@ -1,5 +1,24 @@
 # Binance Futures HA Trading Bot — Development Log
 
+## Phase 12: Main Orchestration & Full System Integration
+**Date:** 2026-11-25  
+**Status:** Completed  
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer  
+
+### Work Completed:
+1. **User Data Stream & ListenKey Support:**
+   - Added `/fapi/v1/listenKey` `POST`/`PUT`/`DELETE` methods to `BinanceFuturesClient` (`src/exchange/client.py`).
+   - Built `BinanceUserDataStream` (`src/execution/user_stream.py`) with automated keepalive and `ORDER_TRADE_UPDATE` dispatching.
+2. **Main Trading Bot Orchestrator (`src/orchestrator.py`):**
+   - Connected all 11 domain layers into an event-driven, dependency-injected `TradingBotOrchestrator`.
+   - Enforced One-Way mode check at startup, executed `StartupReconciler` before scanning, restored unexpired confirmation windows, and pre-seeded 15m/1m candle buffers and Heikin-Ashi series.
+   - Built debounced 15m and 1m batch flushes so simultaneous multi-symbol confirmations preserve deterministic snapshot rank arbitration.
+   - Wired signal handoff: Swing Detection (5L/5R OHLC) $\rightarrow$ Bracket Leverage matching & Friction-adjusted Risk Validation $\rightarrow$ `PositionManager.open_position` $\rightarrow$ User Data Stream / Watchdog exit handling.
+3. **CLI Entrypoint (`src/main.py`):**
+   - Implemented `--check-config` validation flag, sanitized structured logging setup, and `SIGINT`/`SIGTERM` graceful shutdown handling.
+4. **Verification & Testing:**
+   - Verified full mocked end-to-end trade lifecycle integration (`tests/integration/test_e2e_lifecycle.py`) and orchestrator unit tests (`tests/unit/test_orchestrator.py`).
+
 ## Amendment 01: Chronological Backtesting & Live-Trading Replay Specification (Section 6.1)
 **Date:** 2026-11-25  
 **Status:** Specification & Architecture Incorporated  

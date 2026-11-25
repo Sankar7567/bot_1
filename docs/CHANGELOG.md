@@ -5,6 +5,16 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-25
+### Added
+- Phase 12: Main Orchestration & Full System Integration.
+- `src/exchange/client.py`: Added User Data Stream listenKey REST methods (`create_listen_key`, `keepalive_listen_key`, `close_listen_key`) with `api_key_only` header mode and `PUT` request support.
+- `src/execution/user_stream.py`: Added `BinanceUserDataStream` managing listenKey lifecycle, keepalive loop, auto-reconnect, and `ORDER_TRADE_UPDATE` dispatch.
+- `src/orchestrator.py`: Implemented `TradingBotOrchestrator` connecting Scanner (60s refresh), MarketData (1m/15m seeding & WS), Heikin-Ashi Series, Multi-Symbol Strategy Engine, Swing Detector (5L/5R OHLC), Risk Validation & Leverage Brackets, Order Router, Protective Order Manager, Position Manager (global lock), and Startup Reconciler. Includes universe symbol protection for in-flight windows/positions, debounced timestamp batching for deterministic rank arbitration, exit fill handling, fallback watchdog loop, and graceful shutdown.
+- `src/main.py`: Added CLI entrypoint with `--check-config` validation, structured logging setup, and OS `SIGINT`/`SIGTERM` graceful shutdown handling.
+- `tests/unit/test_orchestrator.py` & `tests/integration/test_e2e_lifecycle.py`: Added full unit and mocked end-to-end lifecycle integration tests covering scan $\rightarrow$ trigger $\rightarrow$ rank tie-break $\rightarrow$ swing $\rightarrow$ risk $\rightarrow$ entry $\rightarrow$ protection $\rightarrow$ TP fill $\rightarrow$ sibling cancel $\rightarrow$ DB close $\rightarrow$ window consumption on risk failure.
+- `docs/API_CONTRACTS.md`: Added Section 1.16 for Orchestrator, User Data Stream, and CLI.
+
 ## [0.10.1] - 2026-11-25
 ### Added
 - **Amendment 01 (Section 6.1): Historically Accurate, Chronological Backtesting and Live-Trading Replay**:

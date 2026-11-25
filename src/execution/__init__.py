@@ -23,8 +23,10 @@ from src.execution.models import (
     OrderType,
 )
 from src.execution.order_router import OrderRouter
+from src.execution.user_stream import BinanceUserDataStream
 
 __all__ = [
+    "BinanceUserDataStream",
     "MAX_CLIENT_ORDER_ID_LENGTH",
     "OrderPrefix",
     "generate_client_order_id",
