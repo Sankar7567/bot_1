@@ -5,6 +5,12 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-11-25
+### Added
+- Phase 15: Independent Audit & Deployment Readiness Sign-Off.
+- Verified bytecode compilation (`python -m compileall`), AST & security/secret hygiene across all `src/` modules, CLI `--check-config` preflight (`app_env=testnet`), and full test suite with branch coverage (`86.71%` >= `80%` threshold).
+- Updated `README.md` with complete 15-phase roadmap status, `src/backtesting/`, `src/orchestrator.py`, `src/main.py`, and operational CLI/testing commands.
+
 ## [0.13.0] - 2026-11-25
 ### Added
 - Phase 14: Binance Testnet Operational Validation & Fault Injection.

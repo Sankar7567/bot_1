@@ -38,14 +38,16 @@ A robust, mathematically verified, automated algorithmic trading system for Bina
 │   ├── indicators/     # Pure Heikin-Ashi & 5L/5R Swing Calculations
 │   ├── strategy/       # 15m Trigger & 1m Confirmation State Machine
 │   ├── risk/           # 10% Equity Sizing, Leverage Brackets, Step Size
-│   ├── execution/      # Order Submission, Client Order IDs, Fills
+│   ├── execution/      # Order Submission, Client Order IDs, Fills, User Stream
 │   ├── positions/      # Position Manager & Protective SL/TP Lifecycle
 │   ├── state/          # Persistent SQLite Store & Crash Recovery
-│   └── monitoring/     # Structured Logging & Secret Masking
+│   ├── backtesting/    # Chronological Non-Lookahead Replay Engine (Amendment 01)
+│   ├── monitoring/     # Structured Logging & Secret Masking
+│   ├── orchestrator.py # Event-Driven TradingBotOrchestrator
+│   └── main.py         # CLI Entrypoint (--check-config, SIGINT/SIGTERM)
 ├── tests/              # Test Suites
-│   ├── unit/           # Unit tests (Mocked, Pure Logic)
-│   ├── integration/    # Component Integration Tests
-│   └── e2e/            # End-to-End Simulation Tests
+│   ├── unit/           # Unit tests (Mocked, Pure Logic, Chronological Backtest)
+│   └── integration/    # Component, E2E Lifecycle, Fault Injection, & Testnet Tests
 ├── pyproject.toml      # Project configuration & test settings
 ├── requirements.txt    # Production runtime dependencies
 └── requirements-dev.txt# Development & testing dependencies
@@ -53,23 +55,23 @@ A robust, mathematically verified, automated algorithmic trading system for Bina
 
 ---
 
-## Development Roadmap (15 Phases)
+## Development Roadmap (15 Phases — All Complete)
 
-- **P01 — Master Project Brief, Architecture & Foundation** [CURRENT]
-- **P02 — Binance Exchange Connector**
-- **P03 — Market Scanner**
-- **P04 — Market Data Engine**
-- **P05 — Heikin-Ashi Engine**
-- **P06 — Multi-Timeframe Strategy Engine**
-- **P07 — Swing Detection Engine**
-- **P08 — Risk Management and Position Sizing**
-- **P09 — Binance Order Execution Engine**
-- **P10 — Protective Order Manager**
-- **P11 — Position Manager and State Recovery**
-- **P12 — Main Orchestration and Full Integration**
-- **P13 — Paper Trading and Strategy Simulation**
-- **P14 — Complete Binance Testnet Validation**
-- **P15 — Final Audit and Deployment Readiness**
+- **P01 — Master Project Brief, Architecture & Foundation** [DONE]
+- **P02 — Binance Exchange Connector** [DONE]
+- **P03 — Market Scanner** [DONE]
+- **P04 — Market Data Engine** [DONE]
+- **P05 — Heikin-Ashi Engine** [DONE]
+- **P06 — Multi-Timeframe Strategy Engine** [DONE]
+- **P07 — Swing Detection Engine** [DONE]
+- **P08 — Risk Management and Position Sizing** [DONE]
+- **P09 — Binance Order Execution Engine** [DONE]
+- **P10 — Protective Order Manager** [DONE]
+- **P11 — Position Manager and State Recovery** [DONE]
+- **P12 — Main Orchestration and Full Integration** [DONE]
+- **P13 — Chronological Backtesting & Live Replay (Amendment 01)** [DONE]
+- **P14 — Binance Testnet Validation & Fault Injection** [DONE]
+- **P15 — Independent Audit and Deployment Readiness** [DONE]
 
 ---
 
@@ -83,6 +85,12 @@ source .venv/bin/activate
 # Install dependencies
 pip install -r requirements-dev.txt
 
-# Run foundational tests
-pytest
+# Validate configuration (defaults to Binance Testnet)
+python -m src.main --check-config
+
+# Run full offline test suite with branch coverage (>= 80%)
+pytest --cov=src --cov-fail-under=80
+
+# Run live Binance Testnet tests (requires BINANCE_API_KEY & BINANCE_API_SECRET)
+pytest -m testnet
 ```
