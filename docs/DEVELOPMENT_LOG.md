@@ -1,5 +1,24 @@
 # Binance Futures HA Trading Bot — Development Log
 
+## Phase 13: Chronological Backtesting & Live-Trading Replay (Amendment 01)
+**Date:** 2026-11-25  
+**Status:** Completed  
+**Lead Engineer:** Lead Software Architect & Senior Python Engineer  
+
+### Work Completed:
+1. **Chronological Market & Clock Infrastructure:**
+   - Implemented `SimulatedClock` (`src/backtesting/clock.py`) and `HistoricalMarketStore` (`src/backtesting/data_adapter.py`).
+   - Enforced strict non-lookahead slicing (`bisect_right` on `close_time <= at_ms`), historical contract listing/delisting filtering (`is_listed_at`), anomaly detection without silent interpolation, and rolling 24h ticker reconstruction with completeness threshold checks.
+2. **Historical Execution Adapter & Financial Ledger:**
+   - Implemented `AccountLedger` (`src/backtesting/ledger.py`) and `HistoricalExchangeAdapter` (`src/backtesting/exec_adapter.py`) implementing the live `BinanceFuturesClient` surface.
+   - Modeled realistic entry delay (next available bar open + spread + slippage + latency), taker fees, 8h funding payments, and conservative `CONSERVATIVE_SL_FIRST` ambiguity resolution on actual OHLC bars.
+3. **Shared-Engine Forward-Walking Replay Runner:**
+   - Implemented `ChronologicalBacktestRunner` (`src/backtesting/runner.py`) and `build_backtest_report` (`src/backtesting/metrics.py`).
+   - Wired the exact shared live components (`MarketScanner`, `MarketDataEngine`, `HeikinAshiSeries`, `MultiSymbolStrategyEngine`, `SwingDetector`, `validate_and_size_position`, `OrderRouter`, `ProtectiveOrderManager`, `PositionManager`) with frozen top-20 snapshot gating so mid-window entrants cannot create candidates until the next 15m window.
+4. **Verification & Testing:**
+   - Verified all 17 mandatory Amendment 01 validation invariants in `tests/unit/test_backtesting_chronological.py` (12/12 passing).
+   - Full test suite passed: 274 passed, 2 skipped (testnet-gated), 84.84% branch coverage across `src/`.
+
 ## Phase 12: Main Orchestration & Full System Integration
 **Date:** 2026-11-25  
 **Status:** Completed  

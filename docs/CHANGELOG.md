@@ -5,6 +5,17 @@ All notable changes to the Binance Futures HA Trading Bot will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-11-25
+### Added
+- Phase 13: Historically Accurate, Chronological Backtesting & Live-Trading Replay (Amendment 01 §6.1).
+- `src/backtesting/models.py`: Added `ContractMetadata`, `ExecutionAssumptions`, `BacktestConfig`, `DataQualityReport`, `TradeAuditRecord`, `BacktestReport`, and performance/risk/cost/equity metric dataclasses.
+- `src/backtesting/clock.py`: Added `SimulatedClock` for monotonic millisecond simulation time progression.
+- `src/backtesting/data_adapter.py`: Added `HistoricalMarketStore` with candle quality validation (`OUT_OF_ORDER`, `DUPLICATE_CANDLE`, `INCOMPLETE_BAR`, `INVALID_OHLC`, `MISSING_VOLUME`, `MISSING_CANDLE`), listing/delisting-aware `get_exchange_info_at`, strict non-lookahead `get_klines_up_to` via `bisect_right`, and rolling 24h ticker reconstruction (`reconstruct_24h_tickers`).
+- `src/backtesting/ledger.py`: Added `AccountLedger` tracking wallet balance, isolated margin, fees, funding, spread/slippage, drawdown, equity curve, and UTC daily PnL.
+- `src/backtesting/exec_adapter.py`: Added `HistoricalExchangeAdapter` implementing the live `BinanceFuturesClient` interface against `HistoricalMarketStore`, with next-bar open + spread + slippage fill modeling, 8h funding boundary simulation, and conservative `CONSERVATIVE_SL_FIRST` ambiguity resolution on actual market OHLC.
+- `src/backtesting/metrics.py` & `src/backtesting/runner.py`: Added `ChronologicalBacktestRunner` and `build_backtest_report` driving the exact shared live modules (`MarketScanner`, `MarketDataEngine`, `HeikinAshiSeries`, `MultiSymbolStrategyEngine`, `SwingDetector`, `validate_and_size_position`, `OrderRouter`, `ProtectiveOrderManager`, `PositionManager`) in strict chronological order with snapshot gating for mid-window entrants.
+- `tests/unit/test_backtesting_chronological.py`: Added 12 validation tests covering all 17 mandatory Amendment 01 §16 chronological, non-lookahead, rolling 24h, execution, accounting, data quality, and determinism invariants.
+
 ## [0.11.0] - 2026-11-25
 ### Added
 - Phase 12: Main Orchestration & Full System Integration.
