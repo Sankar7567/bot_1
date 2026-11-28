@@ -11,8 +11,11 @@ rather than already-exhausted 24h top gainers:
 
 from dataclasses import dataclass
 import math
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
+from src.indicators.heikin_ashi import calculate_heikin_ashi_series
 from src.market_data.models import Candle
+
+ONE_HOUR_MS = 3_600_000
 
 
 @dataclass(frozen=True)
@@ -144,13 +147,69 @@ def compute_bb_width_pct(closes: Sequence[float], period: int = 20) -> float:
   return (4.0 * std / mean) * 100.0
 
 
+def aggregate_15m_to_1h(candles_15m: Sequence[Candle]) -> List[Candle]:
+  """Aggregates complete 15m candles into complete 1h (4-bar) candles chronologically."""
+  closed = [c for c in candles_15m if c.is_closed]
+  if not closed:
+    return []
+
+  buckets: Dict[int, List[Candle]] = {}
+  for c in closed:
+    bucket_open = (c.open_time // ONE_HOUR_MS) * ONE_HOUR_MS
+    buckets.setdefault(bucket_open, []).append(c)
+
+  result: List[Candle] = []
+  for bucket_open in sorted(buckets.keys()):
+    group = sorted(buckets[bucket_open], key=lambda x: x.open_time)
+    if len(group) != 4:
+      continue
+    result.append(
+        Candle(
+            symbol=group[0].symbol,
+            interval="1h",
+            open_time=bucket_open,
+            close_time=bucket_open + ONE_HOUR_MS - 1,
+            open=group[0].open,
+            high=max(c.high for c in group),
+            low=min(c.low for c in group),
+            close=group[-1].close,
+            volume=sum(c.volume for c in group),
+            quote_volume=sum(c.quote_volume for c in group),
+            trades_count=sum(c.trades_count for c in group),
+            is_closed=True,
+        )
+    )
+  return result
+
+
+def compute_htf_trend_direction(candles_15m: Sequence[Candle]) -> Optional[str]:
+  """Determines higher-timeframe (1h) trend direction from completed 1h Heikin-Ashi.
+
+  Returns 'LONG' if latest completed 1h HA candle is bullish, 'SHORT' if bearish,
+  or None if insufficient 1h history (< 2 completed 1h bars) or Doji.
+  """
+  h1_bars = aggregate_15m_to_1h(candles_15m)
+  if len(h1_bars) < 2:
+    return None
+  ha_list = calculate_heikin_ashi_series(h1_bars)
+  latest_ha = ha_list[-1] if ha_list else None
+  if latest_ha is None or not latest_ha.is_closed:
+    return None
+  if latest_ha.is_bullish:
+    return "LONG"
+  if latest_ha.is_bearish:
+    return "SHORT"
+  return None
+
+
 def evaluate_early_momentum(
     symbol: str,
     candles_15m: Sequence[Candle],
 ) -> Optional[MomentumScore]:
   """Scores a symbol's 15m completed OHLCV candles for early-breakout momentum.
 
-  Returns None if insufficient history (< 30 bars).
+  Requires alignment with the 1h higher-timeframe Heikin-Ashi trend and rejects
+  exhausted RSI extremes. Returns None if insufficient history (< 30 bars).
   """
   closed = [c for c in candles_15m if c.is_closed]
   if len(closed) < 30:
@@ -166,13 +225,24 @@ def evaluate_early_momentum(
   rsi_14 = compute_rsi(closes, period=14)
   adx_14, plus_di, minus_di = compute_adx(highs, lows, closes, period=14)
   bb_width = compute_bb_width_pct(closes, period=20)
+  htf_bias = compute_htf_trend_direction(closed)
 
-  # Determine directional momentum alignment & filter out exhausted extremes
+  # Determine directional momentum alignment & filter out exhausted extremes + counter-trend
   score = 0.0
   bias = "NEUTRAL"
 
-  bullish_aligned = roc_9 > 0.25 and plus_di > minus_di and 52.0 <= rsi_14 <= 78.0
-  bearish_aligned = roc_9 < -0.25 and minus_di > plus_di and 22.0 <= rsi_14 <= 48.0
+  bullish_aligned = (
+      roc_9 > 0.25
+      and plus_di > minus_di
+      and 52.0 <= rsi_14 <= 78.0
+      and (htf_bias is None or htf_bias == "LONG")
+  )
+  bearish_aligned = (
+      roc_9 < -0.25
+      and minus_di > plus_di
+      and 22.0 <= rsi_14 <= 48.0
+      and (htf_bias is None or htf_bias == "SHORT")
+  )
 
   if bullish_aligned or bearish_aligned:
     bias = "LONG" if bullish_aligned else "SHORT"

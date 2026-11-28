@@ -27,6 +27,7 @@ from src.backtesting.models import (
 from src.config.settings import Settings
 from src.execution.order_router import OrderRouter
 from src.indicators.heikin_ashi import HeikinAshiCandle, HeikinAshiSeries
+from src.indicators.momentum import compute_htf_trend_direction
 from src.indicators.swing_points import SwingDetector, calculate_swing_stop_loss
 from src.market_data.engine import MarketDataEngine
 from src.market_data.models import Candle, CandleCloseEvent
@@ -93,8 +94,21 @@ class ChronologicalBacktestRunner:
         order_router=self.order_router,
         protective_manager=self.protective_manager,
     )
+    is_momentum = config.strategy_name == "momentum_breakout"
+
+    def _htf_dir(sym: str) -> Optional[Direction]:
+      candles_15m = self.market_data.get_candles(sym, "15m")
+      d = compute_htf_trend_direction(candles_15m)
+      if d == "LONG":
+        return Direction.LONG
+      if d == "SHORT":
+        return Direction.SHORT
+      return None
+
     self.strategy_engine = MultiSymbolStrategyEngine(
-        has_open_position_callback=self.position_manager.has_open_position
+        has_open_position_callback=self.position_manager.has_open_position,
+        require_strong_ha=is_momentum,
+        htf_direction_provider=_htf_dir if is_momentum else None,
     )
 
     # Per-symbol HA series

@@ -11,9 +11,13 @@ from src.backtesting.historical_data import (
 from src.backtesting.service import BacktestService
 from src.config.settings import Settings
 from src.exchange.models import SymbolFilter, SymbolInfo, Ticker24hr
-from src.indicators.momentum import evaluate_early_momentum
-from src.market_data.models import Candle
+from src.indicators.heikin_ashi import HeikinAshiCandle
+from src.indicators.momentum import compute_htf_trend_direction, evaluate_early_momentum
+from src.market_data.models import Candle, CandleCloseEvent
+from src.scanner.models import ScannedSymbol
 from src.scanner.momentum_scanner import MomentumScanner
+from src.strategy.engine import MultiSymbolStrategyEngine
+from src.strategy.models import Direction
 
 
 def _make_symbol_info(symbol: str) -> SymbolInfo:
@@ -246,3 +250,123 @@ class TestBacktestPersistenceAcrossReload:
     assert restored_report is not None
     assert restored_report["config"]["strategy_name"] == "momentum_breakout"
     cache2.close()
+
+
+@pytest.mark.unit
+class TestStrongHAAndHTFTrendRules:
+
+  @pytest.mark.asyncio
+  async def test_requires_new_strong_ha_and_htf_alignment(self):
+    htf_dir = Direction.SHORT
+    engine = MultiSymbolStrategyEngine(
+        has_open_position_callback=lambda: False,
+        require_strong_ha=True,
+        htf_direction_provider=lambda _sym: htf_dir,
+    )
+    snap = [
+        ScannedSymbol(
+            rank=1,
+            symbol="BTCUSDT",
+            price_change_percent=3.0,
+            quote_volume=10_000_000.0,
+            last_price=105.0,
+            base_asset="BTC",
+            quote_asset="USDT",
+            contract_type="PERPETUAL",
+            scan_timestamp=1000,
+        )
+    ]
+
+    # 1. Strong bullish 15m HA, but HTF is SHORT -> counter-trend rejected!
+    strong_bull = HeikinAshiCandle(
+        symbol="BTCUSDT",
+        interval="15m",
+        open_time=0,
+        close_time=899_999,
+        ha_open=100.0,
+        ha_high=106.0,
+        ha_low=100.0,  # no lower wick -> strong bullish
+        ha_close=105.0,
+        is_closed=True,
+    )
+    w1 = await engine.on_15m_candle_closed(snap, {"BTCUSDT": strong_bull}, 899_999)
+    assert len(w1.candidates) == 0
+
+    # Reset prev state by sending a bearish HA, then flip HTF to LONG
+    htf_dir = Direction.LONG
+    weak_bear = HeikinAshiCandle(
+        symbol="BTCUSDT",
+        interval="15m",
+        open_time=900_000,
+        close_time=1_799_999,
+        ha_open=105.0,
+        ha_high=106.0,
+        ha_low=102.0,
+        ha_close=103.0,
+        is_closed=True,
+    )
+    await engine.on_15m_candle_closed(snap, {"BTCUSDT": weak_bear}, 1_799_999)
+
+    # 2. Weak bullish 15m HA (has lower wick) -> rejected!
+    weak_bull = HeikinAshiCandle(
+        symbol="BTCUSDT",
+        interval="15m",
+        open_time=1_800_000,
+        close_time=2_699_999,
+        ha_open=103.0,
+        ha_high=106.0,
+        ha_low=101.0,  # lower wick present
+        ha_close=105.0,
+        is_closed=True,
+    )
+    w2 = await engine.on_15m_candle_closed(snap, {"BTCUSDT": weak_bull}, 2_699_999)
+    assert len(w2.candidates) == 0
+
+    # 3. New strong bullish 15m HA aligned with HTF LONG -> accepted!
+    strong_bull2 = HeikinAshiCandle(
+        symbol="BTCUSDT",
+        interval="15m",
+        open_time=2_700_000,
+        close_time=3_599_999,
+        ha_open=104.0,
+        ha_high=109.0,
+        ha_low=104.0,
+        ha_close=108.0,
+        is_closed=True,
+    )
+    w3 = await engine.on_15m_candle_closed(snap, {"BTCUSDT": strong_bull2}, 3_599_999)
+    assert "BTCUSDT" in w3.candidates
+
+    # 4. Weak 1m HA confirmation -> rejected; Strong 1m HA -> confirms!
+    c1_weak = Candle("BTCUSDT", "1m", 3_600_000, 3_659_999, 108, 109, 107, 108.5, 10, 1000, 5, True)
+    ha1_weak = HeikinAshiCandle("BTCUSDT", "1m", 3_600_000, 3_659_999, 108.0, 109.0, 107.0, 108.5, True)
+    await engine.on_1m_candle_closed(CandleCloseEvent(symbol="BTCUSDT", interval="1m", candle=c1_weak, emitted_at=3_660_000), ha1_weak)
+    assert await engine.flush_1m_timestamp_batch(3_659_999) is None
+
+    c1_strong = Candle("BTCUSDT", "1m", 3_660_000, 3_719_999, 108.5, 110, 108.5, 109.5, 10, 1000, 5, True)
+    ha1_strong = HeikinAshiCandle("BTCUSDT", "1m", 3_660_000, 3_719_999, 108.5, 110.0, 108.5, 109.5, True)
+    await engine.on_1m_candle_closed(CandleCloseEvent(symbol="BTCUSDT", interval="1m", candle=c1_strong, emitted_at=3_720_000), ha1_strong)
+    sig = await engine.flush_1m_timestamp_batch(3_719_999)
+    assert sig is not None
+    assert sig.direction == Direction.LONG
+
+    # 5. Continuation strong bullish 15m HA (not *new*) -> skipped!
+    strong_bull3 = HeikinAshiCandle(
+        symbol="BTCUSDT",
+        interval="15m",
+        open_time=3_600_000,
+        close_time=4_499_999,
+        ha_open=106.0,
+        ha_high=112.0,
+        ha_low=106.0,
+        ha_close=111.0,
+        is_closed=True,
+    )
+    w4 = await engine.on_15m_candle_closed(snap, {"BTCUSDT": strong_bull3}, 4_499_999)
+    assert len(w4.candidates) == 0
+
+  def test_compute_htf_trend_direction_from_15m_bars(self):
+    bars = _make_15m_series("ETHUSDT", count=36, breakout_last=True)
+    # _make_15m_series ends with a bullish breakout
+    htf = compute_htf_trend_direction(bars)
+    assert htf == "LONG"

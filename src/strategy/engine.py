@@ -46,14 +46,21 @@ class MultiSymbolStrategyEngine:
       self,
       has_open_position_callback: Optional[Callable[[], bool]] = None,
       arbitrator: Optional[GlobalSlotArbitrator] = None,
+      require_strong_ha: bool = False,
+      htf_direction_provider: Optional[Callable[[str], Optional[Direction]]] = None,
   ):
     self.has_open_position = has_open_position_callback or (lambda: False)
     self.arbitrator = arbitrator or GlobalSlotArbitrator()
+    self.require_strong_ha = require_strong_ha
+    self.htf_direction_provider = htf_direction_provider
 
     self._active_window: Optional[ConfirmationWindow] = None
     self._signal_listeners: List[Callable[[TradeSignal], Coroutine]] = []
     self._window_history: List[ConfirmationWindow] = []
     self._lock = asyncio.Lock()
+
+    # Track previous 15m HA candle per symbol to detect *new* strong HA candles
+    self._prev_15m_ha: Dict[str, HeikinAshiCandle] = {}
 
     # Buffer: 1m_close_time_ms -> List[CandidateState] that aligned on that bar.
     # Flushed atomically once all same-timestamp events have been evaluated.
@@ -113,13 +120,34 @@ class MultiSymbolStrategyEngine:
         if not ha_candle or not ha_candle.is_closed:
           continue
 
-        if ha_candle.is_bullish:
-          direction = Direction.LONG
-        elif ha_candle.is_bearish:
-          direction = Direction.SHORT
+        prev_ha = self._prev_15m_ha.get(sym)
+        self._prev_15m_ha[sym] = ha_candle
+
+        if self.require_strong_ha:
+          if ha_candle.is_strong_bullish:
+            if prev_ha is not None and prev_ha.is_strong_bullish:
+              continue  # Not a *new* strong bullish HA candle
+            direction = Direction.LONG
+          elif ha_candle.is_strong_bearish:
+            if prev_ha is not None and prev_ha.is_strong_bearish:
+              continue  # Not a *new* strong bearish HA candle
+            direction = Direction.SHORT
+          else:
+            continue
         else:
-          # Doji generates no trigger
-          continue
+          if ha_candle.is_bullish:
+            direction = Direction.LONG
+          elif ha_candle.is_bearish:
+            direction = Direction.SHORT
+          else:
+            # Doji generates no trigger
+            continue
+
+        # Higher-timeframe trend confirmation (when enabled)
+        if self.htf_direction_provider is not None:
+          htf_dir = self.htf_direction_provider(sym)
+          if htf_dir is None or htf_dir != direction:
+            continue
 
         candidate = CandidateState(
             symbol=sym,
@@ -206,10 +234,16 @@ class MultiSymbolStrategyEngine:
 
     # Directional alignment check
     is_aligned = False
-    if candidate.direction == Direction.LONG and ha_1m.is_bullish:
-      is_aligned = True
-    elif candidate.direction == Direction.SHORT and ha_1m.is_bearish:
-      is_aligned = True
+    if self.require_strong_ha:
+      if candidate.direction == Direction.LONG and ha_1m.is_strong_bullish:
+        is_aligned = True
+      elif candidate.direction == Direction.SHORT and ha_1m.is_strong_bearish:
+        is_aligned = True
+    else:
+      if candidate.direction == Direction.LONG and ha_1m.is_bullish:
+        is_aligned = True
+      elif candidate.direction == Direction.SHORT and ha_1m.is_bearish:
+        is_aligned = True
 
     if not is_aligned:
       # Misaligned or Doji -> continue monitoring on subsequent 1m bars

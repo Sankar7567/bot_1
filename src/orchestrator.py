@@ -19,6 +19,7 @@ from src.execution.models import OrderStatus
 from src.execution.order_router import OrderRouter
 from src.execution.user_stream import BinanceUserDataStream
 from src.indicators.heikin_ashi import HeikinAshiCandle, HeikinAshiSeries
+from src.indicators.momentum import compute_htf_trend_direction
 from src.indicators.swing_points import SwingDetector, calculate_swing_stop_loss
 from src.market_data.engine import MarketDataEngine
 from src.market_data.models import CandleCloseEvent
@@ -98,8 +99,23 @@ class TradingBotOrchestrator:
     else:
       self.scanner = MarketScanner(self.client, self.settings)
     self.market_data = market_data or MarketDataEngine(self.client, self.settings)
+    is_momentum = self.settings.strategy_name == "momentum_breakout"
+
+    def _htf_dir(sym: str) -> Optional[Direction]:
+      candles_15m = self.market_data.get_candles(
+          sym, self.settings.timeframe_trigger
+      )
+      d = compute_htf_trend_direction(candles_15m)
+      if d == "LONG":
+        return Direction.LONG
+      if d == "SHORT":
+        return Direction.SHORT
+      return None
+
     self.strategy_engine = strategy_engine or MultiSymbolStrategyEngine(
-        has_open_position_callback=self.position_manager.has_open_position
+        has_open_position_callback=self.position_manager.has_open_position,
+        require_strong_ha=is_momentum,
+        htf_direction_provider=_htf_dir if is_momentum else None,
     )
     self.user_stream = user_stream or BinanceUserDataStream(
         client=self.client,

@@ -59,6 +59,16 @@ class HeikinAshiCandle:
   def lower_wick(self) -> float:
     return min(self.ha_open, self.ha_close) - self.ha_low
 
+  @property
+  def is_strong_bullish(self) -> bool:
+    """Strong bullish HA candle: bullish body with no lower wick (ha_open == ha_low)."""
+    return self.is_bullish and self.lower_wick <= EPSILON
+
+  @property
+  def is_strong_bearish(self) -> bool:
+    """Strong bearish HA candle: bearish body with no upper wick (ha_open == ha_high)."""
+    return self.is_bearish and self.upper_wick <= EPSILON
+
 
 def calculate_heikin_ashi_candle(
     candle: Candle,
