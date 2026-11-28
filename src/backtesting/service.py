@@ -9,6 +9,7 @@ import asyncio
 import csv
 from dataclasses import asdict
 import io
+import json
 import math
 import time
 from typing import Any, Dict, List, Optional
@@ -67,6 +68,7 @@ def serialize_report(
           "initial_balance": report.config.initial_balance,
           "scanner_refresh_interval_ms": report.config.scanner_refresh_interval_ms,
           "warmup_ms": report.config.warmup_ms,
+          "strategy_name": report.config.strategy_name,
           "data_source": report.config.data_source,
       },
       "data_quality": {
@@ -141,6 +143,7 @@ class BacktestService:
     self._current_task: Optional[asyncio.Task] = None
     self._status: Dict[str, Any] = {
         "job_id": None,
+        "strategy_name": "top_gainers_ha",
         "status": "idle",  # idle | downloading | running | completed | failed
         "progress_pct": 0.0,
         "progress_message": "No backtest started yet.",
@@ -152,6 +155,38 @@ class BacktestService:
         "error": None,
     }
     self._last_report: Optional[Dict[str, Any]] = None
+    self._restore_latest_run()
+
+  def _restore_latest_run(self) -> None:
+    """Restores the most recent persisted backtest run/report from SQLite."""
+    latest = self.cache_db.get_latest_backtest_run()
+    if latest is None:
+      return
+    status = latest["status"]
+    msg = latest["progress_message"]
+    err = latest["error"]
+    if status in ("downloading", "running"):
+      status = "failed"
+      err = err or "Server restarted while backtest was in progress."
+      msg = err
+    self._status = {
+        "job_id": latest["job_id"],
+        "strategy_name": latest["strategy_name"],
+        "status": status,
+        "progress_pct": latest["progress_pct"],
+        "progress_message": msg,
+        "current_symbol": None,
+        "symbols_done": 0,
+        "symbols_total": 0,
+        "started_at_ms": latest["started_at_ms"],
+        "completed_at_ms": latest["completed_at_ms"],
+        "error": err,
+    }
+    if latest["report_json"]:
+      try:
+        self._last_report = json.loads(latest["report_json"])
+      except Exception:
+        self._last_report = None
 
   def is_running(self) -> bool:
     return self._current_task is not None and not self._current_task.done()
@@ -167,6 +202,7 @@ class BacktestService:
       start_time_ms: int,
       end_time_ms: int,
       initial_balance: float = 100.0,
+      strategy_name: str = "top_gainers_ha",
       metadata_mode: str = "RESEARCH_MODE",
       assumed_max_leverage: int = 20,
       assumed_maint_margin_ratio: float = 0.005,
@@ -174,6 +210,8 @@ class BacktestService:
       client: Optional[BinanceFuturesClient] = None,
   ) -> str:
     """Starts an asynchronous backtest job. Rejects duplicate concurrent runs."""
+    if strategy_name not in ("top_gainers_ha", "momentum_breakout"):
+      raise ValueError(f"Unsupported strategy_name: {strategy_name}")
     if start_time_ms >= end_time_ms:
       raise ValueError("start_time_ms must be strictly less than end_time_ms.")
     if initial_balance <= 0:
@@ -191,24 +229,38 @@ class BacktestService:
         raise RuntimeError("A backtest job is already in progress.")
 
       job_id = f"bt_{uuid.uuid4().hex[:10]}"
+      started_at = int(time.time() * 1000)
       self._status = {
           "job_id": job_id,
+          "strategy_name": strategy_name,
           "status": "downloading",
           "progress_pct": 0.0,
           "progress_message": "Initializing historical data download...",
           "current_symbol": None,
           "symbols_done": 0,
           "symbols_total": 0,
-          "started_at_ms": int(time.time() * 1000),
+          "started_at_ms": started_at,
           "completed_at_ms": None,
           "error": None,
       }
+      self.cache_db.save_backtest_run(
+          job_id=job_id,
+          strategy_name=strategy_name,
+          status="downloading",
+          progress_pct=0.0,
+          progress_message="Initializing historical data download...",
+          start_time_ms=start_time_ms,
+          end_time_ms=end_time_ms,
+          initial_balance=initial_balance,
+          started_at_ms=started_at,
+      )
       self._current_task = asyncio.create_task(
           self._run_job(
               job_id=job_id,
               start_time_ms=start_time_ms,
               end_time_ms=end_time_ms,
               initial_balance=initial_balance,
+              strategy_name=strategy_name,
               metadata_mode=metadata_mode,
               assumed_max_leverage=assumed_max_leverage,
               assumed_maint_margin_ratio=assumed_maint_margin_ratio,
@@ -225,6 +277,7 @@ class BacktestService:
       start_time_ms: int,
       end_time_ms: int,
       initial_balance: float,
+      strategy_name: str,
       metadata_mode: str,
       assumed_max_leverage: int,
       assumed_maint_margin_ratio: float,
@@ -251,6 +304,7 @@ class BacktestService:
           start_time_ms=start_time_ms,
           end_time_ms=end_time_ms,
           initial_balance=initial_balance,
+          strategy_name=strategy_name,  # type: ignore[arg-type]
           execution=ExecutionAssumptions(
               taker_fee_rate=self.settings.estimated_taker_fee_ratio,
           ),
@@ -281,29 +335,57 @@ class BacktestService:
       )
       report = await runner.run()
       self._last_report = serialize_report(report, provenance=provenance)
+      completed_at = int(time.time() * 1000)
+      msg = f"Completed with {report.performance.total_trades} trades."
 
       self._status.update({
           "status": "completed",
           "progress_pct": 100.0,
-          "progress_message": (
-              f"Completed with {report.performance.total_trades} trades."
-          ),
-          "completed_at_ms": int(time.time() * 1000),
+          "progress_message": msg,
+          "completed_at_ms": completed_at,
       })
+      self.cache_db.save_backtest_run(
+          job_id=job_id,
+          strategy_name=strategy_name,
+          status="completed",
+          progress_pct=100.0,
+          progress_message=msg,
+          start_time_ms=start_time_ms,
+          end_time_ms=end_time_ms,
+          initial_balance=initial_balance,
+          started_at_ms=self._status.get("started_at_ms"),
+          completed_at_ms=completed_at,
+          report_json=json.dumps(self._last_report),
+      )
       logger.info(
-          "Backtest %s completed: trades=%d, net_pnl=%.4f",
+          "Backtest %s (%s) completed: trades=%d, net_pnl=%.4f",
           job_id,
+          strategy_name,
           report.performance.total_trades,
           report.performance.net_profit,
       )
     except Exception as exc:
       logger.error("Backtest %s failed: %s", job_id, exc, exc_info=True)
+      completed_at = int(time.time() * 1000)
       self._status.update({
           "status": "failed",
           "progress_message": f"Backtest failed: {exc}",
-          "completed_at_ms": int(time.time() * 1000),
+          "completed_at_ms": completed_at,
           "error": str(exc),
       })
+      self.cache_db.save_backtest_run(
+          job_id=job_id,
+          strategy_name=strategy_name,
+          status="failed",
+          progress_pct=float(self._status.get("progress_pct", 0.0)),
+          progress_message=f"Backtest failed: {exc}",
+          start_time_ms=start_time_ms,
+          end_time_ms=end_time_ms,
+          initial_balance=initial_balance,
+          started_at_ms=self._status.get("started_at_ms"),
+          completed_at_ms=completed_at,
+          error=str(exc),
+      )
     finally:
       if owns_client:
         await client.close()

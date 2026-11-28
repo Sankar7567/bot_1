@@ -171,6 +171,7 @@
       await api("/api/backtest/start", {
         method: "POST",
         body: JSON.stringify({
+          strategy_name: $("bt-strategy").value,
           start_date: $("bt-start-date").value,
           end_date: $("bt-end-date").value,
           initial_balance: parseFloat($("bt-balance").value),
@@ -219,13 +220,14 @@
     $("bt-results").classList.remove("hidden");
 
     const meta = rep.metadata || {};
+    const stratLabel = (rep.config && rep.config.strategy_name) || "top_gainers_ha";
     const banner = $("bt-provenance-banner");
     if (meta.mode === "RESEARCH_MODE") {
       banner.className = "notice notice-warn";
-      banner.innerHTML = `<strong>RESEARCH-ONLY REPORT:</strong> ${meta.source}. Assumed Max Leverage: ${meta.assumed_max_leverage}x, MMR: ${meta.assumed_maint_margin_ratio}. <em>${meta.listing_limitation_note || ""}</em>`;
+      banner.innerHTML = `<strong>Strategy:</strong> <code>${stratLabel}</code> | <strong>RESEARCH-ONLY REPORT:</strong> ${meta.source}. Assumed Max Leverage: ${meta.assumed_max_leverage}x, MMR: ${meta.assumed_maint_margin_ratio}. <em>${meta.listing_limitation_note || ""}</em>`;
     } else {
       banner.className = "notice";
-      banner.innerHTML = `<strong>VERIFIED METADATA MODE:</strong> Source: ${meta.source} (retrieved ${fmtTs(meta.retrieved_at_ms)}). <em>${meta.listing_limitation_note || ""}</em>`;
+      banner.innerHTML = `<strong>Strategy:</strong> <code>${stratLabel}</code> | <strong>VERIFIED METADATA MODE:</strong> Source: ${meta.source} (retrieved ${fmtTs(meta.retrieved_at_ms)}). <em>${meta.listing_limitation_note || ""}</em>`;
     }
 
     const p = rep.performance;
@@ -423,6 +425,7 @@
       const pos = st.open_position;
       $("live-status-panel").innerHTML = `
         <div class="kv-key">Bot State</div><div><strong>${String(st.state).toUpperCase()}</strong></div>
+        <div class="kv-key">Strategy</div><div><code>${st.strategy_name || "top_gainers_ha"}</code></div>
         <div class="kv-key">Environment</div><div>${String(st.environment).toUpperCase()}</div>
         <div class="kv-key">Exchange Connected</div><div>${st.exchange_connected ? "Yes" : "No"}</div>
         <div class="kv-key">Account Balance</div><div>${st.account_balance != null ? fmtNum(st.account_balance, 2) + " USDT" : "-"}</div>
@@ -447,6 +450,7 @@
       await api("/api/live/start", {
         method: "POST",
         body: JSON.stringify({
+          strategy_name: $("live-strategy").value,
           target_env: $("live-target-env").value,
           confirm_production: $("live-confirm-prod").checked,
           confirmation_phrase: $("live-confirm-phrase").value,
@@ -541,7 +545,44 @@
     window.location.href = "/api/live/trades/export.csv";
   });
 
+  async function syncStateOnLoad() {
+    try {
+      const h = await api("/api/health");
+      if (h && h.health) renderHealth(h.health);
+    } catch (_) {}
+
+    try {
+      const st = await api("/api/backtest/status");
+      if (st.strategy_name) $("bt-strategy").value = st.strategy_name;
+      if (st.status === "downloading" || st.status === "running") {
+        $("btn-run-backtest").disabled = true;
+        $("bt-progress-card").classList.remove("hidden");
+        $("bt-progress-status").textContent = st.status.toUpperCase();
+        $("bt-progress-pct").textContent = `${st.progress_pct || 0}%`;
+        $("bt-progress-fill").style.width = `${st.progress_pct || 0}%`;
+        $("bt-progress-msg").textContent = st.progress_message || "";
+        pollBacktestStatus();
+      } else if (st.status === "completed") {
+        $("bt-progress-card").classList.remove("hidden");
+        $("bt-progress-status").textContent = "COMPLETED";
+        $("bt-progress-pct").textContent = "100%";
+        $("bt-progress-fill").style.width = "100%";
+        $("bt-progress-msg").textContent = st.progress_message || "";
+        const report = await api("/api/backtest/report");
+        renderBacktestReport(report);
+      } else if (st.status === "failed") {
+        $("bt-progress-card").classList.remove("hidden");
+        $("bt-progress-status").textContent = "FAILED";
+        $("bt-progress-pct").textContent = `${st.progress_pct || 0}%`;
+        $("bt-progress-fill").style.width = `${st.progress_pct || 0}%`;
+        $("bt-progress-msg").textContent = st.error || st.progress_message || "";
+      }
+    } catch (_) {}
+  }
+
   // Boot
   initBacktestDefaults();
+  syncStateOnLoad();
   refreshLiveStatus();
+  refreshLiveTrades();
 })();

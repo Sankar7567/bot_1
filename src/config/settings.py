@@ -47,6 +47,10 @@ class Settings(BaseSettings):
   )
 
   # Strategy Timeframes
+  strategy_name: Literal["top_gainers_ha", "momentum_breakout"] = Field(
+      default="top_gainers_ha",
+      description="Active scanner/strategy workflow ('top_gainers_ha' or 'momentum_breakout').",
+  )
   timeframe_trigger: str = Field(
       default="15m",
       description="Directional trigger timeframe (completed Heikin-Ashi).",

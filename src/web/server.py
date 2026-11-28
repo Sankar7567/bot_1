@@ -293,6 +293,7 @@ def make_handler(app: ControlPanelApp):
           start_ms = _parse_date_to_ms(body["start_date"], is_end=False)
           end_ms = _parse_date_to_ms(body["end_date"], is_end=True)
           initial_balance = float(body.get("initial_balance", 100.0))
+          strategy_name = str(body.get("strategy_name", "top_gainers_ha"))
           metadata_mode = str(body.get("metadata_mode", "RESEARCH_MODE"))
           assumed_lev = int(body.get("assumed_max_leverage", 20))
           assumed_mmr = float(body.get("assumed_maint_margin_ratio", 0.005))
@@ -302,6 +303,7 @@ def make_handler(app: ControlPanelApp):
                   start_time_ms=start_ms,
                   end_time_ms=end_ms,
                   initial_balance=initial_balance,
+                  strategy_name=strategy_name,
                   metadata_mode=metadata_mode,
                   assumed_max_leverage=assumed_lev,
                   assumed_maint_margin_ratio=assumed_mmr,
@@ -316,11 +318,13 @@ def make_handler(app: ControlPanelApp):
           target_env = str(body.get("target_env", "testnet"))
           confirm_prod = bool(body.get("confirm_production", False))
           phrase = str(body.get("confirmation_phrase", ""))
+          strategy_name = str(body.get("strategy_name", "top_gainers_ha"))
           status = app.run_coro(
               app.live_controller.start_trading(
                   target_env=target_env,
                   confirm_production=confirm_prod,
                   confirmation_phrase=phrase,
+                  strategy_name=strategy_name,
               ),
               timeout=45.0,
           )

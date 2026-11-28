@@ -72,6 +72,21 @@ CREATE TABLE IF NOT EXISTS download_checkpoints (
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY (symbol, interval, range_start_ms, range_end_ms)
 );
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    job_id TEXT PRIMARY KEY,
+    strategy_name TEXT NOT NULL DEFAULT 'top_gainers_ha',
+    status TEXT NOT NULL,
+    progress_pct REAL NOT NULL DEFAULT 0.0,
+    progress_message TEXT NOT NULL DEFAULT '',
+    start_time_ms INTEGER NOT NULL,
+    end_time_ms INTEGER NOT NULL,
+    initial_balance REAL NOT NULL,
+    started_at_ms INTEGER,
+    completed_at_ms INTEGER,
+    error TEXT,
+    report_json TEXT
+);
 """
 
 
@@ -421,6 +436,78 @@ class HistoricalCacheDB:
         missing.append((expected, ue))
 
     return missing
+
+  def save_backtest_run(
+      self,
+      job_id: str,
+      strategy_name: str,
+      status: str,
+      progress_pct: float,
+      progress_message: str,
+      start_time_ms: int,
+      end_time_ms: int,
+      initial_balance: float,
+      started_at_ms: Optional[int],
+      completed_at_ms: Optional[int] = None,
+      error: Optional[str] = None,
+      report_json: Optional[str] = None,
+  ) -> None:
+    """Persists a backtest job status and serialized report so UI reloads restore it."""
+    conn = self.get_connection()
+    with conn:
+      conn.execute(
+          """
+          INSERT INTO backtest_runs (
+              job_id, strategy_name, status, progress_pct, progress_message,
+              start_time_ms, end_time_ms, initial_balance, started_at_ms,
+              completed_at_ms, error, report_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(job_id) DO UPDATE SET
+              status = excluded.status,
+              progress_pct = excluded.progress_pct,
+              progress_message = excluded.progress_message,
+              completed_at_ms = excluded.completed_at_ms,
+              error = excluded.error,
+              report_json = COALESCE(excluded.report_json, backtest_runs.report_json);
+          """,
+          (
+              job_id,
+              strategy_name,
+              status,
+              progress_pct,
+              progress_message,
+              start_time_ms,
+              end_time_ms,
+              initial_balance,
+              started_at_ms,
+              completed_at_ms,
+              error,
+              report_json,
+          ),
+      )
+
+  def get_latest_backtest_run(self) -> Optional[Dict[str, Any]]:
+    """Retrieves the most recent persisted backtest run (including report_json if completed)."""
+    conn = self.get_connection()
+    row = conn.execute(
+        "SELECT * FROM backtest_runs ORDER BY started_at_ms DESC LIMIT 1;"
+    ).fetchone()
+    if row is None:
+      return None
+    return {
+        "job_id": row["job_id"],
+        "strategy_name": row["strategy_name"],
+        "status": row["status"],
+        "progress_pct": float(row["progress_pct"]),
+        "progress_message": row["progress_message"],
+        "start_time_ms": int(row["start_time_ms"]),
+        "end_time_ms": int(row["end_time_ms"]),
+        "initial_balance": float(row["initial_balance"]),
+        "started_at_ms": row["started_at_ms"],
+        "completed_at_ms": row["completed_at_ms"],
+        "error": row["error"],
+        "report_json": row["report_json"],
+    }
 
 
 class HistoricalDataManager:

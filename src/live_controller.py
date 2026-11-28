@@ -48,6 +48,7 @@ class LiveTradingController:
     self._run_task: Optional[asyncio.Task] = None
     self._state: str = "stopped"  # stopped | starting | running | stopping | error
     self._active_env: str = self.base_settings.app_env
+    self._active_strategy: str = self.base_settings.strategy_name
     self._started_at_ms: Optional[int] = None
     self._last_error: Optional[str] = None
     self._last_reconciliation: Optional[str] = None
@@ -58,7 +59,9 @@ class LiveTradingController:
         and cfg.binance_api_secret.get_secret_value()
     )
 
-  def _build_env_settings(self, target_env: str) -> Settings:
+  def _build_env_settings(
+      self, target_env: str, strategy_name: Optional[str] = None
+  ) -> Settings:
     """Builds settings for the explicitly requested environment without mutating defaults."""
     if target_env not in ("testnet", "production"):
       raise ValueError(f"Unsupported environment: {target_env}")
@@ -86,13 +89,14 @@ class LiveTradingController:
           else "wss://fstream.binance.com/ws"
       )
 
-    return self.base_settings.model_copy(
-        update={
-            "app_env": target_env,
-            "binance_rest_base_url": rest_url,
-            "binance_ws_base_url": ws_url,
-        }
-    )
+    updates: Dict[str, Any] = {
+        "app_env": target_env,
+        "binance_rest_base_url": rest_url,
+        "binance_ws_base_url": ws_url,
+    }
+    if strategy_name in ("top_gainers_ha", "momentum_breakout"):
+      updates["strategy_name"] = strategy_name
+    return self.base_settings.model_copy(update=updates)
 
   def is_running(self) -> bool:
     return self._state in ("starting", "running")
@@ -102,6 +106,7 @@ class LiveTradingController:
       target_env: str = "testnet",
       confirm_production: bool = False,
       confirmation_phrase: str = "",
+      strategy_name: str = "top_gainers_ha",
   ) -> Dict[str, Any]:
     """Starts the existing TradingBotOrchestrator after enforcing all safety gates."""
     async with self._lock:
@@ -116,7 +121,8 @@ class LiveTradingController:
               f"'{PRODUCTION_CONFIRMATION_PHRASE}'."
           )
 
-      cfg = self._build_env_settings(target_env)
+      cfg = self._build_env_settings(target_env, strategy_name=strategy_name)
+      self._active_strategy = cfg.strategy_name
 
       # Gate 2: API credentials must exist
       if not self._has_credentials(cfg):
@@ -350,6 +356,7 @@ class LiveTradingController:
     return {
         "state": self._state,
         "environment": self._active_env,
+        "strategy_name": self._active_strategy,
         "credentials_configured": has_creds,
         "live_enabled": has_creds,
         "missing_credentials_message": (

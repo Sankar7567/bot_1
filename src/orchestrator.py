@@ -30,6 +30,7 @@ from src.risk.calculator import calculate_risk_budget, calculate_stop_distance
 from src.risk.models import SizingInput, SizingResult
 from src.risk.validator import validate_and_size_position
 from src.scanner.models import ScannedSymbol, ScanResult
+from src.scanner.momentum_scanner import MomentumScanner
 from src.scanner.scanner import MarketScanner
 from src.state.database import DatabaseManager
 from src.state.reconciler import ReconciliationReport, StartupReconciler
@@ -90,7 +91,12 @@ class TradingBotOrchestrator:
     )
 
     # Market & Strategy layers
-    self.scanner = scanner or MarketScanner(self.client, self.settings)
+    if scanner is not None:
+      self.scanner = scanner
+    elif self.settings.strategy_name == "momentum_breakout":
+      self.scanner = MomentumScanner(self.client, self.settings)
+    else:
+      self.scanner = MarketScanner(self.client, self.settings)
     self.market_data = market_data or MarketDataEngine(self.client, self.settings)
     self.strategy_engine = strategy_engine or MultiSymbolStrategyEngine(
         has_open_position_callback=self.position_manager.has_open_position

@@ -60,6 +60,13 @@
 
       <form id="backtest-form" class="card form-grid">
         <label>
+          Strategy Workflow
+          <select id="bt-strategy">
+            <option value="top_gainers_ha">Top-20 24h Gainers + HA (Original)</option>
+            <option value="momentum_breakout">Early Momentum Breakout + HA (Vol Surge / ROC / ADX / RSI)</option>
+          </select>
+        </label>
+        <label>
           Start Date (UTC)
           <input type="date" id="bt-start-date" required />
         </label>
@@ -188,6 +195,13 @@
         <div class="card">
           <h2>Controls &amp; Safety Gates</h2>
           <div class="form-stack">
+            <label>
+              Strategy Workflow
+              <select id="live-strategy">
+                <option value="top_gainers_ha">Top-20 24h Gainers + HA (Original)</option>
+                <option value="momentum_breakout">Early Momentum Breakout + HA (Vol Surge / ROC / ADX / RSI)</option>
+              </select>
+            </label>
             <label>
               Target Environment
               <select id="live-target-env">

@@ -39,6 +39,7 @@ from src.risk.models import SizingInput
 from src.risk.validator import validate_and_size_position
 from src.scanner.exceptions import EmptyUniverseError, StaleDataError
 from src.scanner.models import ScannedSymbol
+from src.scanner.momentum_scanner import MomentumScanner
 from src.scanner.scanner import MarketScanner
 from src.state.database import DatabaseManager
 from src.state.repository import StateRepository
@@ -79,7 +80,10 @@ class ChronologicalBacktestRunner:
     self.repository = StateRepository(self.db_manager)
 
     # Shared live components wired to HistoricalExchangeAdapter
-    self.scanner = MarketScanner(client=self.adapter, settings=self.settings)
+    if config.strategy_name == "momentum_breakout":
+      self.scanner = MomentumScanner(client=self.adapter, settings=self.settings)
+    else:
+      self.scanner = MarketScanner(client=self.adapter, settings=self.settings)
     self.market_data = MarketDataEngine(client=self.adapter, settings=self.settings)
     self.order_router = OrderRouter(exchange_client=self.adapter)
     self.protective_manager = ProtectiveOrderManager(exchange_client=self.adapter)

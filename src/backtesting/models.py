@@ -54,6 +54,7 @@ class BacktestConfig:
   min_24h_coverage_ratio: float = 0.80
   execution: ExecutionAssumptions = field(default_factory=ExecutionAssumptions)
   random_seed: int = 42
+  strategy_name: Literal["top_gainers_ha", "momentum_breakout"] = "top_gainers_ha"
   data_source: str = "historical_klines"
   data_version: str = "1.0"
   software_version: str = "0.12.0"
