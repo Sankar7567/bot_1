@@ -53,6 +53,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
       action="store_true",
       help="Validate configuration and print sanitized settings then exit.",
   )
+  parser.add_argument(
+      "--ui",
+      action="store_true",
+      help="Launch the local Trading Control Panel web UI (does not start live trading).",
+  )
+  parser.add_argument(
+      "--port",
+      type=int,
+      default=8080,
+      help="Port for the local Trading Control Panel web UI (default: 8080).",
+  )
   return parser.parse_args(argv)
 
 
@@ -61,6 +72,14 @@ def main(argv: list[str] | None = None) -> int:
   if args.check_config:
     settings = load_settings()
     print(f"Configuration OK (env={settings.app_env}): {settings.get_safe_dict()}")
+    return 0
+
+  if args.ui:
+    from src.web.server import run_control_panel_server
+
+    settings = load_settings()
+    setup_logger(log_level=settings.log_level, log_file=settings.log_file)
+    run_control_panel_server(port=args.port, settings=settings)
     return 0
 
   try:

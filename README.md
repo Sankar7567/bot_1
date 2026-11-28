@@ -36,7 +36,7 @@ The Binance HA Bot is an automated algorithmic trading system that:
 | Chronological backtesting engine | ✅ Implemented |
 | Binance Testnet support | ✅ Implemented |
 | Structured logging with secret redaction | ✅ Implemented |
-| Web dashboard / frontend | ❌ NOT IMPLEMENTED |
+| Local Web Control Panel (`python -m src.main --ui`) | ✅ Implemented |
 | Standalone paper-trading virtual wallet | ❌ NOT IMPLEMENTED |
 | REST / SSE API server | ❌ NOT IMPLEMENTED |
 | Database migration CLI | ❌ NOT IMPLEMENTED |
@@ -157,6 +157,10 @@ For a complete step-by-step installation guide, see **[docs/INSTALLATION_GUIDE.m
 # Start the bot in Testnet mode (default — no live money)
 source .venv/bin/activate
 python -m src.main
+
+# Or launch the local Trading Control Panel Web UI (http://127.0.0.1:8080)
+# (Does not start live trading automatically; supports Backtesting, Health Checks, and Live Controls)
+python -m src.main --ui
 ```
 
 The bot will:

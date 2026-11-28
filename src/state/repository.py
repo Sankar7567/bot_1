@@ -1,6 +1,8 @@
 """State Repository for persisting positions, orders, strategy windows, and audit events."""
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import csv
+import io
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -53,6 +55,44 @@ class OrderRecord:
   executed_qty: float = 0.0
   avg_price: float = 0.0
   reduce_only: bool = False
+
+
+@dataclass
+class LiveTradeRecord:
+  """Permanent SQLite-backed ledger record for a live/testnet trade (Section 8)."""
+
+  trade_id: str
+  symbol: str
+  direction: str
+  status: str  # OPEN | CLOSED | ERROR
+  entry_timestamp: int
+  entry_price: float
+  quantity: float
+  leverage: int
+  stop_loss: float
+  take_profit: float
+  created_at: int
+  updated_at: int
+  position_id: Optional[str] = None
+  environment: str = "testnet"
+  signal_timestamp: int = 0
+  entry_order_id: Optional[str] = None
+  initial_margin: float = 0.0
+  protective_order_ids: str = ""
+  exit_order_id: Optional[str] = None
+  exit_timestamp: Optional[int] = None
+  exit_price: Optional[float] = None
+  exit_reason: Optional[str] = None
+  gross_pnl: float = 0.0
+  entry_fee: float = 0.0
+  exit_fee: float = 0.0
+  funding: float = 0.0
+  net_pnl: float = 0.0
+  exchange_order_status: str = ""
+  execution_errors: str = ""
+
+  def to_dict(self) -> Dict[str, Any]:
+    return asdict(self)
 
 
 class StateRepository:
@@ -377,3 +417,327 @@ class StateRepository:
           (event_type, entity_type, entity_id, details, now_ms),
       )
     logger.debug("Audit [%s] on %s:%s - %s", event_type, entity_type, entity_id, details)
+
+  # --------------------------------------------------------------------------
+  # Permanent Live Trade Ledger (Section 8)
+  # --------------------------------------------------------------------------
+
+  def save_live_trade(self, trade: LiveTradeRecord) -> None:
+    """Inserts or updates a live trade record without deleting history."""
+    conn = self.db.get_connection()
+    with conn:
+      conn.execute(
+          """
+          INSERT INTO live_trades (
+              trade_id, position_id, symbol, direction, environment, status,
+              signal_timestamp, entry_order_id, entry_timestamp, entry_price,
+              quantity, leverage, initial_margin, stop_loss, take_profit,
+              protective_order_ids, exit_order_id, exit_timestamp, exit_price,
+              exit_reason, gross_pnl, entry_fee, exit_fee, funding, net_pnl,
+              exchange_order_status, execution_errors, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(trade_id) DO UPDATE SET
+              status = excluded.status,
+              protective_order_ids = CASE
+                  WHEN excluded.protective_order_ids != '' THEN excluded.protective_order_ids
+                  ELSE live_trades.protective_order_ids
+              END,
+              exit_order_id = COALESCE(excluded.exit_order_id, live_trades.exit_order_id),
+              exit_timestamp = COALESCE(excluded.exit_timestamp, live_trades.exit_timestamp),
+              exit_price = COALESCE(excluded.exit_price, live_trades.exit_price),
+              exit_reason = COALESCE(excluded.exit_reason, live_trades.exit_reason),
+              gross_pnl = excluded.gross_pnl,
+              entry_fee = excluded.entry_fee,
+              exit_fee = excluded.exit_fee,
+              funding = excluded.funding,
+              net_pnl = excluded.net_pnl,
+              exchange_order_status = CASE
+                  WHEN excluded.exchange_order_status != '' THEN excluded.exchange_order_status
+                  ELSE live_trades.exchange_order_status
+              END,
+              execution_errors = CASE
+                  WHEN excluded.execution_errors != '' THEN excluded.execution_errors
+                  ELSE live_trades.execution_errors
+              END,
+              updated_at = excluded.updated_at;
+          """,
+          (
+              trade.trade_id,
+              trade.position_id,
+              trade.symbol.upper(),
+              trade.direction.upper(),
+              trade.environment,
+              trade.status.upper(),
+              trade.signal_timestamp,
+              trade.entry_order_id,
+              trade.entry_timestamp,
+              trade.entry_price,
+              trade.quantity,
+              trade.leverage,
+              trade.initial_margin,
+              trade.stop_loss,
+              trade.take_profit,
+              trade.protective_order_ids,
+              trade.exit_order_id,
+              trade.exit_timestamp,
+              trade.exit_price,
+              trade.exit_reason,
+              trade.gross_pnl,
+              trade.entry_fee,
+              trade.exit_fee,
+              trade.funding,
+              trade.net_pnl,
+              trade.exchange_order_status,
+              trade.execution_errors,
+              trade.created_at,
+              trade.updated_at,
+          ),
+      )
+
+  def get_live_trade(self, trade_id: str) -> Optional[LiveTradeRecord]:
+    conn = self.db.get_connection()
+    row = conn.execute(
+        "SELECT * FROM live_trades WHERE trade_id = ?;", (trade_id,)
+    ).fetchone()
+    return self._row_to_live_trade(row) if row else None
+
+  def get_live_trade_by_position(self, position_id: str) -> Optional[LiveTradeRecord]:
+    conn = self.db.get_connection()
+    row = conn.execute(
+        "SELECT * FROM live_trades WHERE position_id = ?;", (position_id,)
+    ).fetchone()
+    return self._row_to_live_trade(row) if row else None
+
+  def list_live_trades(
+      self,
+      symbol: Optional[str] = None,
+      direction: Optional[str] = None,
+      status: Optional[str] = None,
+      limit: int = 500,
+  ) -> List[LiveTradeRecord]:
+    conn = self.db.get_connection()
+    clauses: List[str] = []
+    params: List[Any] = []
+    if symbol:
+      clauses.append("symbol = ?")
+      params.append(symbol.upper())
+    if direction:
+      clauses.append("direction = ?")
+      params.append(direction.upper())
+    if status:
+      clauses.append("status = ?")
+      params.append(status.upper())
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"SELECT * FROM live_trades {where} ORDER BY entry_timestamp DESC LIMIT ?;",
+        params,
+    ).fetchall()
+    return [self._row_to_live_trade(r) for r in rows]
+
+  def sync_live_trades_from_positions(self, environment: str = "testnet") -> int:
+    """Backfills/reconciles any positions not yet present in live_trades without overwriting."""
+    conn = self.db.get_connection()
+    rows = conn.execute(
+        """
+        SELECT p.* FROM positions p
+        LEFT JOIN live_trades lt ON lt.position_id = p.position_id
+        WHERE lt.position_id IS NULL;
+        """
+    ).fetchall()
+    synced = 0
+    for row in rows:
+      pos = self._row_to_position(row)
+      orders = self.get_orders_for_position(pos.position_id)
+      entry_ord = next(
+          (o for o in orders if o.order_type == "MARKET" and not o.reduce_only),
+          None,
+      )
+      prot_ids = ",".join(
+          filter(None, [pos.sl_client_order_id, pos.tp_client_order_id])
+      )
+      exit_ord = next(
+          (o for o in orders if o.reduce_only and o.status == "FILLED"),
+          None,
+      )
+      direction = "LONG" if pos.side == "BUY" else "SHORT"
+      initial_margin = (
+          (pos.quantity * pos.entry_price) / pos.leverage
+          if pos.leverage > 0
+          else 0.0
+      )
+      gross = pos.realized_pnl or 0.0
+      trade = LiveTradeRecord(
+          trade_id=f"lt_{pos.position_id}",
+          position_id=pos.position_id,
+          symbol=pos.symbol,
+          direction=direction,
+          environment=environment,
+          status="CLOSED" if pos.status == "CLOSED" else "OPEN",
+          signal_timestamp=pos.created_at,
+          entry_order_id=entry_ord.client_order_id if entry_ord else None,
+          entry_timestamp=pos.created_at,
+          entry_price=pos.entry_price,
+          quantity=pos.quantity,
+          leverage=pos.leverage,
+          initial_margin=initial_margin,
+          stop_loss=pos.stop_loss_price,
+          take_profit=pos.take_profit_price,
+          protective_order_ids=prot_ids,
+          exit_order_id=exit_ord.client_order_id if exit_ord else None,
+          exit_timestamp=pos.closed_at,
+          exit_price=pos.exit_price,
+          exit_reason=pos.exit_reason,
+          gross_pnl=gross,
+          net_pnl=gross,
+          exchange_order_status=exit_ord.status if exit_ord else (entry_ord.status if entry_ord else pos.status),
+          created_at=pos.created_at,
+          updated_at=pos.updated_at,
+      )
+      self.save_live_trade(trade)
+      synced += 1
+    return synced
+
+  def upsert_live_trade_from_position(
+      self,
+      position_id: str,
+      environment: str = "testnet",
+      signal_timestamp: Optional[int] = None,
+      execution_error: str = "",
+  ) -> Optional[LiveTradeRecord]:
+    """Creates or updates a live_trades row from the current positions & orders state."""
+    pos = self.get_position(position_id)
+    if pos is None:
+      return None
+
+    orders = self.get_orders_for_position(pos.position_id)
+    entry_ord = next(
+        (o for o in orders if o.order_type == "MARKET" and not o.reduce_only),
+        None,
+    )
+    prot_ids = ",".join(
+        filter(None, [pos.sl_client_order_id, pos.tp_client_order_id])
+    )
+    exit_ord = next(
+        (o for o in orders if o.reduce_only and o.status == "FILLED"),
+        None,
+    )
+    existing = self.get_live_trade_by_position(pos.position_id)
+    sig_ts = (
+        signal_timestamp
+        if signal_timestamp is not None
+        else (existing.signal_timestamp if existing else pos.created_at)
+    )
+    direction = "LONG" if pos.side == "BUY" else "SHORT"
+    initial_margin = (
+        (pos.quantity * pos.entry_price) / pos.leverage
+        if pos.leverage > 0
+        else 0.0
+    )
+    gross = pos.realized_pnl or 0.0
+    trade = LiveTradeRecord(
+        trade_id=existing.trade_id if existing else f"lt_{pos.position_id}",
+        position_id=pos.position_id,
+        symbol=pos.symbol,
+        direction=direction,
+        environment=existing.environment if existing else environment,
+        status="CLOSED" if pos.status == "CLOSED" else ("ERROR" if execution_error else "OPEN"),
+        signal_timestamp=sig_ts,
+        entry_order_id=entry_ord.client_order_id if entry_ord else None,
+        entry_timestamp=pos.created_at,
+        entry_price=pos.entry_price,
+        quantity=pos.quantity,
+        leverage=pos.leverage,
+        initial_margin=initial_margin,
+        stop_loss=pos.stop_loss_price,
+        take_profit=pos.take_profit_price,
+        protective_order_ids=prot_ids,
+        exit_order_id=exit_ord.client_order_id if exit_ord else None,
+        exit_timestamp=pos.closed_at,
+        exit_price=pos.exit_price,
+        exit_reason=pos.exit_reason,
+        gross_pnl=gross,
+        entry_fee=existing.entry_fee if existing else 0.0,
+        exit_fee=existing.exit_fee if existing else 0.0,
+        funding=existing.funding if existing else 0.0,
+        net_pnl=gross - (existing.entry_fee if existing else 0.0) - (existing.exit_fee if existing else 0.0) - (existing.funding if existing else 0.0),
+        exchange_order_status=exit_ord.status if exit_ord else (entry_ord.status if entry_ord else pos.status),
+        execution_errors=execution_error or (existing.execution_errors if existing else ""),
+        created_at=pos.created_at,
+        updated_at=pos.updated_at,
+    )
+    self.save_live_trade(trade)
+    return trade
+
+  def export_live_trades_csv(self) -> str:
+    """Exports all live trade ledger records to CSV."""
+    trades = self.list_live_trades(limit=10_000)
+    output = io.StringIO()
+    fieldnames = [
+        "trade_id",
+        "position_id",
+        "symbol",
+        "direction",
+        "environment",
+        "status",
+        "signal_timestamp",
+        "entry_order_id",
+        "entry_timestamp",
+        "entry_price",
+        "quantity",
+        "leverage",
+        "initial_margin",
+        "stop_loss",
+        "take_profit",
+        "protective_order_ids",
+        "exit_order_id",
+        "exit_timestamp",
+        "exit_price",
+        "exit_reason",
+        "gross_pnl",
+        "entry_fee",
+        "exit_fee",
+        "funding",
+        "net_pnl",
+        "exchange_order_status",
+        "execution_errors",
+    ]
+    writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for t in trades:
+      writer.writerow(t.to_dict())
+    return output.getvalue()
+
+  def _row_to_live_trade(self, row: Any) -> LiveTradeRecord:
+    return LiveTradeRecord(
+        trade_id=row["trade_id"],
+        position_id=row["position_id"],
+        symbol=row["symbol"],
+        direction=row["direction"],
+        environment=row["environment"],
+        status=row["status"],
+        signal_timestamp=int(row["signal_timestamp"]),
+        entry_order_id=row["entry_order_id"],
+        entry_timestamp=int(row["entry_timestamp"]),
+        entry_price=float(row["entry_price"]),
+        quantity=float(row["quantity"]),
+        leverage=int(row["leverage"]),
+        initial_margin=float(row["initial_margin"]),
+        stop_loss=float(row["stop_loss"]),
+        take_profit=float(row["take_profit"]),
+        protective_order_ids=row["protective_order_ids"] or "",
+        exit_order_id=row["exit_order_id"],
+        exit_timestamp=int(row["exit_timestamp"]) if row["exit_timestamp"] is not None else None,
+        exit_price=float(row["exit_price"]) if row["exit_price"] is not None else None,
+        exit_reason=row["exit_reason"],
+        gross_pnl=float(row["gross_pnl"]),
+        entry_fee=float(row["entry_fee"]),
+        exit_fee=float(row["exit_fee"]),
+        funding=float(row["funding"]),
+        net_pnl=float(row["net_pnl"]),
+        exchange_order_status=row["exchange_order_status"] or "",
+        execution_errors=row["execution_errors"] or "",
+        created_at=int(row["created_at"]),
+        updated_at=int(row["updated_at"]),
+    )

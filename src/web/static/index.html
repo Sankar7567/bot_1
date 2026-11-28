@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Binance HA Trading Control Panel</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <strong>Binance HA Bot</strong>
+      <span class="subtitle">Control Panel</span>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="overview">1. Overview</button>
+      <button class="tab" data-tab="backtesting">2. Backtesting</button>
+      <button class="tab" data-tab="live">3. Live Trading</button>
+    </nav>
+    <div id="top-env-badge" class="badge badge-muted">ENV: --</div>
+  </header>
+
+  <main class="container">
+    <!-- ==================== 1. OVERVIEW / SYSTEM HEALTH ==================== -->
+    <section id="tab-overview" class="tab-panel active">
+      <div class="panel-header">
+        <div>
+          <h1>System Health</h1>
+          <p class="muted">Real diagnostic checks of exchange connectivity, internal engines, and configuration.</p>
+        </div>
+        <button id="btn-run-health" class="btn btn-primary">RUN SYSTEM CHECK</button>
+      </div>
+
+      <div id="health-summary-bar" class="summary-bar hidden"></div>
+
+      <div class="health-grid">
+        <div class="card">
+          <h2>Exchange Connectivity</h2>
+          <div id="health-exchange" class="check-list muted">Click "RUN SYSTEM CHECK" to test connectivity.</div>
+        </div>
+        <div class="card">
+          <h2>Internal Components</h2>
+          <div id="health-internal" class="check-list muted">Click "RUN SYSTEM CHECK" to test subsystems.</div>
+        </div>
+        <div class="card">
+          <h2>Configuration</h2>
+          <div id="health-configuration" class="check-list muted">Click "RUN SYSTEM CHECK" to verify config.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 2. BACKTESTING ==================== -->
+    <section id="tab-backtesting" class="tab-panel">
+      <div class="panel-header">
+        <div>
+          <h1>Historical Backtesting</h1>
+          <p class="muted">Chronological forward-walking simulation using the existing strategy, risk, and execution modules.</p>
+        </div>
+      </div>
+
+      <form id="backtest-form" class="card form-grid">
+        <label>
+          Start Date (UTC)
+          <input type="date" id="bt-start-date" required />
+        </label>
+        <label>
+          End Date (UTC)
+          <input type="date" id="bt-end-date" required />
+        </label>
+        <label>
+          Starting Balance (USDT)
+          <input type="number" id="bt-balance" min="1" step="0.01" value="100" required />
+        </label>
+        <label>
+          Metadata Mode
+          <select id="bt-metadata-mode">
+            <option value="RESEARCH_MODE">Research Mode (No API keys needed)</option>
+            <option value="VERIFIED_METADATA">Verified Metadata Mode (Requires API keys)</option>
+          </select>
+        </label>
+        <label id="bt-lev-wrap">
+          Assumed Max Leverage
+          <input type="number" id="bt-leverage" min="1" max="125" value="20" />
+        </label>
+        <label id="bt-mmr-wrap">
+          Assumed Maint. Margin Ratio
+          <input type="number" id="bt-mmr" min="0.001" max="0.5" step="0.001" value="0.005" />
+        </label>
+        <div class="form-actions">
+          <button type="submit" id="btn-run-backtest" class="btn btn-primary">RUN BACKTEST</button>
+        </div>
+      </form>
+
+      <div id="bt-progress-card" class="card hidden">
+        <div class="progress-row">
+          <strong id="bt-progress-status">Starting...</strong>
+          <span id="bt-progress-pct">0%</span>
+        </div>
+        <div class="progress-track"><div id="bt-progress-fill" class="progress-fill"></div></div>
+        <div id="bt-progress-msg" class="muted small"></div>
+      </div>
+
+      <div id="bt-results" class="hidden">
+        <div id="bt-provenance-banner" class="notice"></div>
+
+        <div class="metrics-grid" id="bt-metrics-grid"></div>
+
+        <div class="two-col">
+          <div class="card">
+            <h3>Long vs Short Performance</h3>
+            <div id="bt-direction-stats"></div>
+          </div>
+          <div class="card">
+            <h3>Equity Curve</h3>
+            <div id="bt-equity-chart" class="equity-chart"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="panel-header compact">
+            <h3>Backtest Trade History (<span id="bt-trade-count">0</span>)</h3>
+            <button id="btn-bt-export-csv" class="btn btn-secondary">Export CSV</button>
+          </div>
+
+          <div class="filters-row">
+            <input type="text" id="bt-filter-symbol" placeholder="Filter symbol (e.g. BTCUSDT)" />
+            <select id="bt-filter-direction">
+              <option value="">All Directions</option>
+              <option value="LONG">LONG</option>
+              <option value="SHORT">SHORT</option>
+            </select>
+            <select id="bt-filter-outcome">
+              <option value="">Winning &amp; Losing</option>
+              <option value="WIN">Winning Only</option>
+              <option value="LOSS">Losing Only</option>
+            </select>
+            <input type="text" id="bt-filter-exit" placeholder="Exit reason (SL/TP)" />
+            <input type="date" id="bt-filter-from" title="From date" />
+            <input type="date" id="bt-filter-to" title="To date" />
+          </div>
+
+          <div class="table-wrap">
+            <table id="bt-trades-table">
+              <thead>
+                <tr>
+                  <th data-sort="trade_id">Trade ID</th>
+                  <th data-sort="symbol">Symbol</th>
+                  <th data-sort="direction">Dir</th>
+                  <th data-sort="candidate_rank">Rank</th>
+                  <th data-sort="trigger_15m_timestamp">15m Trigger</th>
+                  <th data-sort="confirmation_1m_timestamp">1m Confirm</th>
+                  <th data-sort="fill_timestamp">Entry Time</th>
+                  <th data-sort="fill_price">Entry</th>
+                  <th data-sort="sl_price">SL</th>
+                  <th data-sort="tp_price">TP</th>
+                  <th data-sort="quantity">Qty</th>
+                  <th data-sort="leverage">Lev</th>
+                  <th data-sort="exit_timestamp">Exit Time</th>
+                  <th data-sort="exit_fill_price">Exit</th>
+                  <th data-sort="exit_reason">Reason</th>
+                  <th data-sort="gross_pnl">Gross P&amp;L</th>
+                  <th data-sort="entry_fee">Fees</th>
+                  <th data-sort="funding_paid">Funding</th>
+                  <th data-sort="slippage_cost">Slippage</th>
+                  <th data-sort="net_pnl">Net P&amp;L</th>
+                  <th data-sort="equity_after_trade">Equity</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 3. LIVE TRADING ==================== -->
+    <section id="tab-live" class="tab-panel">
+      <div class="panel-header">
+        <div>
+          <h1>Live Trading Control</h1>
+          <p class="muted">Explicitly controlled execution using the existing TradingBotOrchestrator. Disabled by default.</p>
+        </div>
+      </div>
+
+      <div id="live-creds-warning" class="notice notice-warn hidden"></div>
+
+      <div class="two-col">
+        <div class="card">
+          <h2>Controls &amp; Safety Gates</h2>
+          <div class="form-stack">
+            <label>
+              Target Environment
+              <select id="live-target-env">
+                <option value="testnet">Testnet (Recommended / Simulated Exchange)</option>
+                <option value="production">Production (Real Money — Explicit Confirmation Required)</option>
+              </select>
+            </label>
+
+            <div id="prod-confirm-box" class="notice notice-danger hidden">
+              <strong>Production Real-Money Confirmation Required</strong>
+              <p class="small">Type <code>ENABLE LIVE TRADING</code> and check the confirmation box below.</p>
+              <label class="inline-check">
+                <input type="checkbox" id="live-confirm-prod" />
+                I understand live trading uses real funds on Binance Production.
+              </label>
+              <input type="text" id="live-confirm-phrase" placeholder="Type ENABLE LIVE TRADING" />
+            </div>
+
+            <div class="btn-row">
+              <button id="btn-live-start" class="btn btn-primary">START LIVE TRADING</button>
+              <button id="btn-live-stop" class="btn btn-secondary">STOP LIVE TRADING</button>
+              <button id="btn-live-emergency" class="btn btn-danger">EMERGENCY CLOSE</button>
+            </div>
+            <div id="live-action-msg" class="small muted"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Current Status &amp; Position</h2>
+          <div id="live-status-panel" class="kv-grid"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="panel-header compact">
+          <h3>Live Trade History (Persistent SQLite)</h3>
+          <div class="btn-row">
+            <button id="btn-live-refresh-trades" class="btn btn-secondary">Refresh</button>
+            <button id="btn-live-export-csv" class="btn btn-secondary">Export CSV</button>
+          </div>
+        </div>
+
+        <div class="filters-row">
+          <input type="text" id="live-filter-symbol" placeholder="Filter symbol" />
+          <select id="live-filter-direction">
+            <option value="">All Directions</option>
+            <option value="LONG">LONG</option>
+            <option value="SHORT">SHORT</option>
+          </select>
+          <select id="live-filter-status">
+            <option value="">All Statuses</option>
+            <option value="OPEN">OPEN</option>
+            <option value="CLOSED">CLOSED</option>
+            <option value="ERROR">ERROR</option>
+          </select>
+        </div>
+
+        <div class="table-wrap">
+          <table id="live-trades-table">
+            <thead>
+              <tr>
+                <th>Trade ID</th>
+                <th>Env</th>
+                <th>Symbol</th>
+                <th>Dir</th>
+                <th>Status</th>
+                <th>Entry Time</th>
+                <th>Entry</th>
+                <th>Qty</th>
+                <th>Lev</th>
+                <th>SL</th>
+                <th>TP</th>
+                <th>Exit Time</th>
+                <th>Exit</th>
+                <th>Reason</th>
+                <th>Fees</th>
+                <th>Net P&amp;L</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Trade Audit / Detail Modal -->
+  <div id="detail-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <div class="panel-header compact">
+        <h3 id="modal-title">Trade Details</h3>
+        <button id="modal-close" class="btn btn-secondary">Close</button>
+      </div>
+      <pre id="modal-body" class="json-pre"></pre>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

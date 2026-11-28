@@ -153,6 +153,9 @@ class TradingBotOrchestrator:
     # 3. Reconcile state with exchange before touching market scanning
     report = await self.reconciler.reconcile_startup_state()
     logger.info("Startup reconciliation status: %s", report.status.value)
+    self.repository.sync_live_trades_from_positions(
+        environment=self.settings.app_env
+    )
 
     # 4. Restore active strategy window if persisted and still valid
     active_win = self.repository.get_active_strategy_window()
@@ -512,11 +515,16 @@ class TradingBotOrchestrator:
 
     # 6. Execute market entry + place SL/TP protective orders via PositionManager
     try:
-      await self.position_manager.open_position(
+      opened_pos = await self.position_manager.open_position(
           signal=signal,
           sizing=sizing_res,
           tick_size=filters.tick_size,
           step_size=filters.step_size,
+      )
+      self.repository.upsert_live_trade_from_position(
+          opened_pos.position_id,
+          environment=self.settings.app_env,
+          signal_timestamp=signal.confirmation_timestamp,
       )
       self._persist_window_state()
     except Exception as exc:
@@ -579,11 +587,15 @@ class TradingBotOrchestrator:
           avg_price,
       )
       try:
+        pos_id = cur_pos.position_id
         await self.position_manager.handle_exit_fill(
             triggered_client_order_id=cid or None,
             triggered_order_id=order_id or None,
             exit_price=avg_price if avg_price > 0 else None,
             exit_qty=executed_qty if executed_qty > 0 else None,
+        )
+        self.repository.upsert_live_trade_from_position(
+            pos_id, environment=self.settings.app_env
         )
       except Exception as exc:
         logger.error("Failed handling exit fill for %s: %s", symbol, exc)
@@ -628,14 +640,22 @@ class TradingBotOrchestrator:
                 client_order_id=cur_pos.protective_pair.tp_client_order_id,
             )
             if sl_q.get("status") == "FILLED":
+              pos_id = cur_pos.position_id
               await self.position_manager.handle_exit_fill(
                   triggered_client_order_id=cur_pos.protective_pair.sl_client_order_id,
                   exit_price=float(sl_q.get("avgPrice", 0.0) or 0.0) or None,
               )
+              self.repository.upsert_live_trade_from_position(
+                  pos_id, environment=self.settings.app_env
+              )
             elif tp_q.get("status") == "FILLED":
+              pos_id = cur_pos.position_id
               await self.position_manager.handle_exit_fill(
                   triggered_client_order_id=cur_pos.protective_pair.tp_client_order_id,
                   exit_price=float(tp_q.get("avgPrice", 0.0) or 0.0) or None,
+              )
+              self.repository.upsert_live_trade_from_position(
+                  pos_id, environment=self.settings.app_env
               )
         except Exception as exc:
           logger.debug("Watchdog check failed: %s", exc)

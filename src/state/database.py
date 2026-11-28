@@ -81,6 +81,42 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+
+CREATE TABLE IF NOT EXISTS live_trades (
+    trade_id TEXT PRIMARY KEY,
+    position_id TEXT UNIQUE,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT 'testnet',
+    status TEXT NOT NULL,
+    signal_timestamp INTEGER NOT NULL DEFAULT 0,
+    entry_order_id TEXT,
+    entry_timestamp INTEGER NOT NULL,
+    entry_price REAL NOT NULL,
+    quantity REAL NOT NULL,
+    leverage INTEGER NOT NULL,
+    initial_margin REAL NOT NULL DEFAULT 0.0,
+    stop_loss REAL NOT NULL,
+    take_profit REAL NOT NULL,
+    protective_order_ids TEXT DEFAULT '',
+    exit_order_id TEXT,
+    exit_timestamp INTEGER,
+    exit_price REAL,
+    exit_reason TEXT,
+    gross_pnl REAL NOT NULL DEFAULT 0.0,
+    entry_fee REAL NOT NULL DEFAULT 0.0,
+    exit_fee REAL NOT NULL DEFAULT 0.0,
+    funding REAL NOT NULL DEFAULT 0.0,
+    net_pnl REAL NOT NULL DEFAULT 0.0,
+    exchange_order_status TEXT DEFAULT '',
+    execution_errors TEXT DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_trades_symbol ON live_trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_live_trades_status ON live_trades(status);
+CREATE INDEX IF NOT EXISTS idx_live_trades_entry_ts ON live_trades(entry_timestamp);
 """
 
 
